@@ -71,12 +71,23 @@ A140 DELETE /tagger/installations/{installation_id}
 def register():
     for line in CONTRACTS.strip().splitlines():
         identity, method, path = line.split()
-        async def unavailable(request: Request):
-            pid = request.path_params.get('project_id')
-            if pid:
-                request.app.state.runtime.require_project(pid)
-            raise Failure(501, 'feature:unsupported')
-        router.add_api_route(path, unavailable, methods=[method], name=identity,
+        def handler(identity):
+            async def unavailable(request: Request):
+                pid = request.path_params.get('project_id')
+                if pid:
+                    request.app.state.runtime.require_project(pid)
+                code, reason = {
+                    'A021': ('llm:probe_unavailable', 'llm_adapter_not_configured'),
+                    'A022': ('llm:image_test_unavailable', 'llm_adapter_not_configured'),
+                    'A038': ('launcher:unsupported_schema', 'verified_launcher_schema_required'),
+                    'A124': ('backend:incompatible_schema', 'verified_backend_schema_required'),
+                    'A138': ('tagger:download_unavailable', 'hf_downloader_not_configured'),
+                    'A139': ('tagger:installation_unavailable', 'hf_downloader_not_configured'),
+                    'A140': ('tagger:installation_unavailable', 'hf_downloader_not_configured'),
+                }.get(identity, ('feature:unsupported', 'runtime_adapter_not_implemented'))
+                raise Failure(501, code, details={'endpoint': identity, 'reason': reason})
+            return unavailable
+        router.add_api_route(path, handler(identity), methods=[method], name=identity,
                              responses={501: {'description': 'Adapter not implemented or configured'}})
 
 

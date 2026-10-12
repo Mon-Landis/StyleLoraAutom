@@ -7,6 +7,15 @@ from .session import resource
 router = APIRouter(prefix='/api')
 
 
+@router.delete('/llm/endpoints/{endpoint_id}')
+@router.delete('/llm/endpoints/{endpoint_id}/tokens/{token_ref}')
+async def delete_endpoint(endpoint_id: str, request: Request, token_ref: str = None):
+    from fastapi.responses import Response
+    rt, token = runtime(request), expected(request)
+    await rt.product.call(lambda: service(rt).delete_endpoint(endpoint_id, token, token_ref))
+    return Response(status_code=204)
+
+
 def service(rt):
     if not hasattr(rt, 'catalog_service'):
         from stylelora.runtime.catalog import Catalog
@@ -117,9 +126,13 @@ async def entries(dictionary_id: str, request: Request):
 
 @router.get('/tags/catalog-status')
 async def catalog_status(request: Request):
-    catalog = runtime(request).catalog
+    rt = runtime(request)
+    catalog = rt.catalog
+    from stylelora.tagging.translations import TranslationStore
+    translations = await rt.product.call(lambda: TranslationStore(rt.product.root/'translations.json').load())
     return dict(available=bool(catalog and catalog.available), complete=bool(catalog and catalog.complete),
-                revision=catalog.revision if catalog else None)
+                revision=catalog.revision if catalog else None, alias_capable=bool(catalog and hasattr(catalog, 'aliases')),
+                translation_count=len(translations['entries']), translation_version=str(translations['revision']))
 
 
 @router.get('/tags/search')

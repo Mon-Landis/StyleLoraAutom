@@ -21,6 +21,11 @@ class Catalog:
         secrets = self.store.secret_store
         result['token_refs'] = [{'token_ref': str(UUID(ref)), 'has_secret': bool(secrets and secrets.has_secret(ref))} for ref in endpoint.token_refs]
         result['version'] = version(self.rt.secret, 'endpoint', endpoint.endpoint_id, endpoint.revision)
+        for ref in result['token_refs']:
+            ref['version'] = result['version']
+            from stylelora.llm.secrets import environment_name
+            import os
+            ref['environment_override'] = environment_name(UUID(ref['token_ref']).hex) in os.environ
         return result
 
     def endpoint(self, identity):
@@ -79,6 +84,28 @@ class Catalog:
     def roles(self):
         revision, values = self.store.llm.role_map()
         return {'roles': values, 'revision': revision, 'version': version(self.rt.secret, 'roles', revision)}
+
+    def delete_endpoint(self, identity, expected, token_ref=None):
+        endpoint = self.endpoint(identity)
+        check(expected, self.endpoint_view(endpoint)['version'])
+        if any(v and v['endpoint_id'] == identity for v in self.roles()['roles'].values()):
+            raise Failure(409, 'token:in_use' if token_ref else 'endpoint:in_use')
+        if token_ref is None:
+            self.store.llm.delete_endpoint(identity, expected_revision=endpoint.revision)
+            return
+        try:
+            ref = UUID(token_ref).hex
+        except ValueError:
+            raise Failure(422, 'input:invalid') from None
+        if ref not in endpoint.token_refs:
+            raise Failure(404, 'resource:not_found')
+        if any(e.endpoint_id != identity and ref in e.token_refs for e in self.store.llm.load_endpoints()):
+            raise Failure(409, 'token:in_use')
+        if self.store.secret_store is None:
+            raise Failure(503, 'secret:unavailable')
+        self.store.secret_store.delete_secret(ref)
+        self.store.llm.save_endpoint(replace(endpoint, token_refs=tuple(r for r in endpoint.token_refs if r != ref)),
+                                     expected_revision=endpoint.revision)
 
     def save_roles(self, value, expected):
         fields(value, {'roles'}, {'roles'})

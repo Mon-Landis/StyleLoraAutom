@@ -48,6 +48,8 @@ class Runtime:
         self.current, self.generation, self.draining = None, 0, False
         self.transition = asyncio.Lock()
         self.codes, self.grants, self.known, self.runners, self.idempotency = {}, {}, {}, {}, {}
+        from stylelora.llm.config import read_json
+        self.known = {k: Path(v) for k, v in read_json(self.product.root/'recent.json', {}).items()}
         self.close_task = None
         self.shutdown_callback = None
         self.metadata_revision = 0
@@ -105,6 +107,9 @@ class Runtime:
     @asynccontextmanager
     async def lease(self, identity):
         ctx = self.require_project(identity)
+        if any(r['project_id'] == identity and r['kind'] == 'cleanup'
+               and r['status'] in ('pending', 'running') for r in self.supervisor.records.values()):
+            raise Failure(409, 'storage:leased')
         ctx.users += 1
         try:
             yield ctx
@@ -147,6 +152,8 @@ class Runtime:
             ctx = self.current = ProjectContext(str(uuid4()), self.generation, handle)
             known_id = next((key for key, value in self.known.items() if value == path), str(uuid4()))
             self.known[known_id] = path
+            from stylelora.llm.config import atomic_json
+            await self.product.call(lambda: atomic_json(self.product.root/'recent.json', {k: str(v) for k, v in self.known.items()}))
             self.events.publish('project.opened', project_id=ctx.project_id,
                                 payload={'project_id': ctx.project_id, 'generation': ctx.generation, 'recovery_pending': False})
             return self.project_view()

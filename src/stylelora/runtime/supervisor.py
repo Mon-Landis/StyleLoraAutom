@@ -28,7 +28,8 @@ class TaskSupervisor:
             except Exception as exc:
                 self.failures[identity] = exc
                 record['status'] = 'failed'
-                record['error'] = {'code': exc.code if isinstance(exc, Failure) else 'internal:error'}
+                from stylelora.api.errors import translate
+                record['error'] = {'code': translate(exc).code}
             finally:
                 record['version'] = '2'
                 self.events.publish('operation.' + record['status'], project_id=project_id,

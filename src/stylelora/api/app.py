@@ -7,7 +7,7 @@ from .errors import response
 from .security import protect
 
 
-def create_app(runtime):
+def create_app(runtime, *, frontend_dist=None):
     @asynccontextmanager
     async def lifespan(app):
         yield
@@ -32,19 +32,25 @@ def create_app(runtime):
     async def http_error(request: Request, exc):
         return response(Failure(exc.status_code, 'resource:not_found' if exc.status_code == 404 else 'input:invalid'), request.state.request_id)
 
-    from .routes import session, images, resources, exchange, product, prompts, unavailable
+    from .routes import session, images, resources, exchange, product, prompts, unavailable, storage, catalog_extra, local
     app.include_router(session.router)
     app.include_router(images.router)
     app.include_router(resources.router)
     app.include_router(exchange.router)
     app.include_router(product.router)
     app.include_router(prompts.router)
+    app.include_router(storage.router)
+    app.include_router(catalog_extra.router)
+    app.include_router(local.router)
     import re
     normalize = lambda path: re.sub(r'\{[^}]+\}', '{}', path)
-    implemented = {(normalize(r.path), m) for r in app.routes for m in getattr(r, 'methods', ())}
+    implemented = {(normalize(r.path), m) for r in app.routes if getattr(r, 'path', '').startswith('/api')
+                   for m in getattr(r, 'methods', ())}
     for route in unavailable.router.routes:
         if not any((normalize(route.path), m) in implemented for m in route.methods):
             app.router.routes.append(route)
     # Static resources (stats, batches, current, imports) must precede ID routes.
     app.router.routes.sort(key=lambda r: (getattr(r, 'path', '').count('{'), -len(getattr(r, 'path', ''))))
+    from .static import mount_frontend
+    mount_frontend(app, frontend_dist)
     return app

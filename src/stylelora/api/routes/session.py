@@ -27,8 +27,12 @@ def accepted(rt, kind, work, project_id=None):
 @router.get('/session')
 async def session(request: Request):
     rt = runtime(request)
-    return dict(instance_id=rt.instance_id, epoch=rt.events.epoch, api_version=1,
+    result = dict(instance_id=rt.instance_id, epoch=rt.events.epoch, api_version=1,
                 project=rt.project_view(), capabilities={'picker': rt.picker is not None}, draining=rt.draining)
+    if request.query_params.get('bootstrap') == 'true':
+        origin = rt.dev_origin or 'http://' + rt.authority
+        result['bootstrap_url'] = origin + '/#bootstrap=' + rt.bootstrap_code(origin)
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
 
 
 @router.post('/session/shutdown')
@@ -75,7 +79,7 @@ async def pick(request: Request):
     rt = runtime(request)
     value = await body(request, {'purpose', 'project_id'}, {'purpose'})
     if rt.picker is None:
-        raise Failure(501, 'feature:unsupported')
+        raise Failure(501, 'picker:unavailable', details={'reason': 'native_picker_not_configured'})
     async def work():
         path = await rt.blocking(lambda: rt.picker(value['purpose']))
         return rt.grant(path, value['purpose'], value.get('project_id')) if path else None

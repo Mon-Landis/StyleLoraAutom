@@ -7,6 +7,9 @@ name = "stylelora"
 version = "0.1.0"
 requires-python = ">=3.12"
 
+[project.scripts]
+stylelora = "stylelora.__main__:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

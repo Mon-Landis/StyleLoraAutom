@@ -38,16 +38,21 @@ async def execute(project_id: str, request: Request):
 @router.get('/exports')
 async def exports(project_id: str, request: Request):
     rt = runtime(request)
-    rt.require_project(project_id)
-    return dict(items=[dict(v[0]) for v in service(rt).exports.values() if v[0]['project_id'] == project_id],
-                next_cursor=None, has_more=False, limit=50, upper_id=None)
+    ctx = rt.require_project(project_id)
+    await rt.blocking(lambda: service(rt).restore(ctx))
+    from .product import service as catalog
+    from stylelora.runtime.contracts import version
+    rows = sorted([dict(v[0]) for v in service(rt).exports.values() if v[0]['project_id'] == project_id],
+                  key=lambda r: r['export_id'])
+    return catalog(rt).page(rows, dict(request.query_params), 'exports/'+project_id, version(rt.secret, rows))
 
 
 @router.get('/exports/{export_id}')
 @router.get('/exports/{export_id}/report')
 async def get_export(project_id: str, export_id: str, request: Request):
     rt = runtime(request)
-    return resource(service(rt).get(rt.require_project(project_id), export_id, request.url.path.endswith('/report')))
+    async with rt.lease(project_id) as ctx:
+        return resource(await rt.blocking(lambda: service(rt).get(ctx, export_id, request.url.path.endswith('/report'))))
 
 
 @router.post('/exports/{export_id}/cancel')

@@ -53,6 +53,9 @@ class Exchange:
                     issues=issues, selected=len(members), trigger_override_digest=override_digest(ctx.handle.metadata.trigger_word, self.rt.catalog) if kind == 'export' else None)
 
     async def execute(self, ctx, kind, value):
+        if any(r['project_id'] == ctx.project_id and r['kind'] == 'cleanup'
+               and r['status'] in ('pending', 'running') for r in self.rt.supervisor.records.values()):
+            raise Failure(409, 'storage:leased')
         fields(value, {'scheme_id', 'preview_id', 'digest', 'trigger_override_digest'} if kind == 'export' else {'preview_id', 'digest', 'name'}, {'preview_id', 'digest'})
         preview = self.previews.get(value['preview_id'])
         if not preview or preview['project_id'] != ctx.project_id or preview['kind'] != kind or preview['expiry'] <= self.rt.clock():
@@ -83,7 +86,7 @@ class Exchange:
                 return dict(record)
             record.update(status='running', version='1')
             try:
-                report = await self.rt.blocking(lambda: export_project(ctx.handle, preview['scheme_id'], catalog=self.rt.catalog,
+                report = await self.rt.blocking(lambda: export_project(ctx.handle, preview['scheme_id'], request_key=identity, catalog=self.rt.catalog,
                     cancel=stop.is_set, trigger_override_digest=value.get('trigger_override_digest')))
                 data = plain(report)
                 record.update(status='finished', selected=data['selected'], exported=data['exported'], skipped=data['skipped'], failed=data['failed'],
@@ -101,9 +104,46 @@ class Exchange:
         return dict(record)
 
     def get(self, ctx, identity, report=False):
+        self.restore(ctx)
         entry = self.exports.get(identity)
         if not entry or entry[0]['project_id'] != ctx.project_id:
             raise Failure(410, 'export:session_expired')
         if report and entry[0]['status'] != 'finished':
             raise Failure(409, 'export:not_finished')
         return entry[2] if report else dict(entry[0])
+
+    def restore(self, ctx):
+        import json
+        from pathlib import PurePosixPath
+        root = ctx.handle.root/'exports'
+        if not root.is_dir() or root.is_symlink() or root.is_junction():
+            return
+        directories = []
+        for parent in root.iterdir():
+            if parent.is_dir() and not parent.is_symlink() and not parent.is_junction():
+                directories.extend(parent.iterdir())
+        for directory in directories:
+            if not directory.is_dir() or directory.is_symlink() or directory.is_junction():
+                continue
+            for name in ('report.json', 'interrupted.json'):
+                path = directory/name
+                if not path.is_file() or path.is_symlink():
+                    continue
+                try:
+                    data = json.loads(path.read_text(encoding='utf-8'))
+                    import re
+                    identity = data['export_id']
+                    if not isinstance(identity, str) or not re.fullmatch(r'[A-Za-z0-9_-]+', identity):
+                        continue
+                    if identity in self.exports and self.exports[identity][0]['project_id'] == ctx.project_id:
+                        continue
+                    finished = name == 'report.json' and not directory.name.startswith('.partial-')
+                    relative = directory.relative_to(ctx.handle.root).as_posix()
+                    if finished and (data.get('dir') != relative or PurePosixPath(data['dir']).is_absolute()):
+                        continue
+                    record = dict(export_id=identity, project_id=ctx.project_id, status='finished' if finished else 'interrupted',
+                        version='2', relative_dir=relative, report_url=f'/api/projects/{ctx.project_id}/exports/{identity}/report' if finished else None,
+                        **{k: data.get(k, 0) for k in ('selected', 'exported', 'skipped', 'failed')})
+                    self.exports[identity] = (record, Event(), data if finished else None)
+                except (OSError, ValueError, KeyError, TypeError):
+                    continue

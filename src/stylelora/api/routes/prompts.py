@@ -8,6 +8,23 @@ from .product import service as catalog
 router = APIRouter(prefix='/api/prompt-tasks')
 
 
+@router.post('/{task_id}/append')
+async def append(task_id: str, request: Request):
+    from stylelora.runtime.contracts import fields
+    rt, value = runtime(request), await request.json()
+    fields(value, {'dictionary_id', 'indices', 'expected_versions'}, {'dictionary_id', 'expected_versions'})
+    def work():
+        svc = service(rt)
+        dictionary = catalog(rt).dictionary(value['dictionary_id'])
+        keys = {task_id, value['dictionary_id']}
+        versions = fields(value['expected_versions'], keys, keys)
+        check(versions[task_id], svc.get(task_id)['version'])
+        check(versions[value['dictionary_id']], dictionary['version'])
+        return plain(svc.service.append_results(task_id, value['dictionary_id'],
+            expected_revision=dictionary['revision'], indices=value.get('indices')))
+    return await rt.product.call(work)
+
+
 def service(rt):
     if not hasattr(rt, 'prompts'):
         from stylelora.runtime.prompts import Prompts

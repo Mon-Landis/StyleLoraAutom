@@ -4,7 +4,52 @@ from ctypes import wintypes
 import hashlib
 import os
 import socket
+from pathlib import Path
 from .contracts import Failure
+
+
+def discovery_path():
+    return Path.home() / '.stylelora' / 'instance.json'
+
+
+def publish_instance(rt):
+    import base64
+    from stylelora.llm.config import atomic_json
+    from stylelora.llm.secrets import _crypt, _restrict_file
+    path = discovery_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _restrict_file(path.parent)
+    atomic_json(path, {'instance_id': rt.instance_id, 'authority': rt.authority,
+        'credential': base64.b64encode(_crypt(rt.token.encode())).decode()}, secure=_restrict_file)
+
+
+def attach_url():
+    import base64
+    import json
+    import re
+    import urllib.request
+    from stylelora.llm.secrets import _crypt
+    data = json.loads(discovery_path().read_text(encoding='utf-8'))
+    authority = data['authority']
+    if not re.fullmatch(r'127\.0\.0\.1:[0-9]{1,5}', authority):
+        raise Failure(422, 'instance:invalid')
+    token = _crypt(base64.b64decode(data['credential'], validate=True), True).decode()
+    request = urllib.request.Request('http://' + authority + '/api/session?bootstrap=true',
+                                     headers={'Authorization': 'Bearer ' + token})
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    with opener.open(request, timeout=3) as response:
+        result = json.load(response)
+    if result['instance_id'] != data['instance_id']:
+        raise Failure(410, 'session:expired')
+    from urllib.parse import urlsplit
+    url = result['bootstrap_url']
+    parsed = urlsplit(url)
+    if parsed.scheme != 'http' or parsed.hostname != '127.0.0.1' or parsed.username or parsed.password:
+        raise Failure(422, 'instance:invalid')
+    return url
 
 
 class InstanceLock:

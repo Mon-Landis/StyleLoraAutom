@@ -120,6 +120,14 @@ class SecretStore:
         except LlmFailure:
             return False
 
+    def delete_secret(self, token_ref: str) -> None:
+        key = environment_name(token_ref).removeprefix('STYLELORA_LLM_TOKEN_')
+        with config_lock(self.path):
+            document = read_json(self.path, {})
+            if key in document:
+                document.pop(key)
+                atomic_json(self.path, document, secure=_restrict_file)
+
     def public_endpoint(self, endpoint: EndpointConfig) -> dict:
         return {'endpoint_id': endpoint.endpoint_id, 'endpoint': '********',
                 'protocol': endpoint.protocol, 'revision': endpoint.revision,

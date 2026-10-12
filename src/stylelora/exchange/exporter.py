@@ -80,6 +80,9 @@ def export_project(project,scheme_id,*,request_key=None,trigger_override_digest=
     if after_freeze:
         after_freeze()
     export_id = clock()+'-'+uuid4().hex[:8]
+    if request_key is not None:
+        from uuid import UUID
+        export_id = str(UUID(request_key))
     parent = relative_path(project.root,f'exports/{scheme_id}')
     parent.mkdir(parents=True,exist_ok=True)
     partial = parent/('.partial-'+export_id)

@@ -143,6 +143,22 @@ class ConfigStore:
             atomic_json(self.path, document)
             return saved
 
+    def delete_endpoint(self, endpoint_id: str, *, expected_revision: int) -> None:
+        with config_lock(self.path):
+            document = self._read()
+            endpoints = self.load_endpoints()
+            old = next((e for e in endpoints if e.endpoint_id == endpoint_id), None)
+            if old is None:
+                raise LlmFailure('llm:binding_missing', outcome='not_sent')
+            if old.revision != expected_revision:
+                raise LlmFailure('llm:revision_conflict', outcome='not_sent')
+            if any(v and v.get('endpoint_id') == endpoint_id for v in document['roles'].values()):
+                raise LlmFailure('endpoint:in_use', outcome='not_sent')
+            document['endpoints'] = [asdict(e) | {'models': [asdict(m) for m in e.models]}
+                                    for e in endpoints if e.endpoint_id != endpoint_id]
+            document['revision'] += 1
+            atomic_json(self.path, document)
+
     def bind_role(self, role: str, endpoint_id: str | None, model: str | None = None,
                   *, expected_revision: int | None = None) -> RoleBinding | None:
         if role not in ROLES:
