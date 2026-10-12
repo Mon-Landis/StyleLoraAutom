@@ -53,7 +53,7 @@ submit_generation(preparation_id)
 | 下划线 | `simple_background` 被转成 `simple background` | 对比 sent 和 meta 前先统一归一化 |
 | 自定义负面词 | effort=medium 时被忽略，用的是 uc_preset 列表 | 要自定义负面词就把 effort 设为 high（effort 由前端配；费用归 Launcher 管，不再作为设计约束） |
 | model / sampler / steps | `prepare_generation` 不支持按请求传 | 只能通过 `update_generation_settings` 改页面设置，**会改掉用户的 UI 状态**，跑完要恢复 |
-| 输出位置 | 不传 `save_path` 时写进画廊 `D:/ComfyUI/NAIGEN/<日期>/` | 传 `save_path` 写进我们自己的 `data/raw/`（必须是 .png、目标不存在、在许可范围内） |
+| 输出位置 | 画廊 `D:/ComfyUI/NAIGEN/<日期>/` **始终另存一份**（传了 save_path 也双写） | 传 `save_path` 写进项目 `images/.pending/<item_id>/<attempts>/`。实测：任意本地目录可写、父目录自动创建；目标已存在时 prepare 即返回 `save_path_exists`，从不覆盖。画廊副本归 Launcher 管，不得移动/删除 |
 
 PNG 元数据里有：`prompt`、`seed`、`steps`、`scale`、`sampler`、`v4_prompt`（base_caption + char_captions）、`v4_negative_prompt`、`uc`、`model_hash`、`signed_hash`。足够完整记录溯源。
 
@@ -89,5 +89,6 @@ PNG 元数据里有：`prompt`、`seed`、`steps`、`scale`、`sampler`、`v4_pr
 - 依赖：Launcher ≥ 4.3.0，MCP 开启 + 完全访问模式
 - 每次升级 Launcher 后重跑 `probe_capabilities`，对比工具列表和 schema
 - 审计日志 `agent/mcp-audit-v1.jsonl`（Launcher 数据目录下）可用于对账扣费
-- 未实测项：付费确认路径、`save_path` 自定义目录、`interrogate_image` 质量、并发会话下的表现
-- 98 个工具中**未见账号/额度查询工具**。可得的只有 `prepare_generation` 的 `estimated_anlas`（单次预估，非余额）。F21 的账号展示因此可能只能走本地累计估算，需重新探测确认（需 MCP token）
+- 未实测项：付费确认路径、`interrogate_image` 质量、并发会话下的表现
+- 已实测（2026-10-12）：**没有账号/额度查询工具**（98 个工具与 `get_application_context` 均无相关字段），能拿到的只有 `prepare_generation` 的 `estimated_anlas`（单次预估，非余额），F21 走本地累计估算；`save_path` 行为见第 3 节
+- 实测中 prepare 回显的 steps 为 28（页面设置原为 14），说明用户页面设置可能已变；适配器每次开跑前必须重读 `get_generation_settings`，不能依赖旧快照

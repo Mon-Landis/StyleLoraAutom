@@ -419,9 +419,15 @@ rating 更新四列为一个原子单元；普通未知不写入，fallback 写�
 
 打开时先取得项目独占锁，完成版本/迁移与完整性检查，启动写线程但暂不调度。一次事务把 running jobs→paused、running sources→paused，保持 started_at/快照，不重算或清空历史计数。再分页核查 sent，核查结果写库串行。仅用户继续后恢复派发。
 
-F05 必须提供可持久恢复的 `item_id + 尝试序号 + 文件指纹 + 完整落盘标志` 证据；仅存在同名 PNG 或相似 prompt 不足以认定归属。已采纳在 `images/.pending/<item_id>/<attempts>/` 存临时产物和收据，不能放可随时清空的 cache。这是文件登记协议，不是第九张业务表，不得含外部绝对路径/密钥。`[待确认]` Launcher save_path 的实际行为仍须实测。
+F05 必须提供可持久恢复的 `item_id + 尝试序号 + 文件指纹 + 完整落盘标志` 证据；仅存在同名 PNG 或相似 prompt 不足以认定归属。已采纳在 `images/.pending/<item_id>/<attempts>/` 存临时产物和收据，不能放可随时清空的 cache。这是文件登记协议，不是第九张业务表，不得含外部绝对路径/密钥。
 
-已采纳的文件协议如下；F05 适配器须根据 save_path 实测兑现，无法获得完整证据时按 unknown 保持暂停：
+Launcher save_path 实测结论（2026-10-12，v4.3.0）：
+- 可写任意本地目录（实测 `D:/IdeaProjects/sp_probe/`），父目录不存在时自动创建；返回 `saved: true`、`saved_path_source: "caller"`、`resource_ref.resourceId`、`metadata_stripped: false`。
+- 目标已存在时 **prepare 阶段**即返回 `{"ok":false,"code":"save_path_exists"}`，从不覆盖。
+- Launcher 无论是否传 save_path 都会在画廊 `NAIGEN/<日期>/` 另存一份（双写）。画廊副本归 Launcher 管，产品不得移动/删除，存储占用扫描不计入项目。
+- 因此 F05 直接把 save_path 设为 `<项目>/images/.pending/<item_id>/<attempts>/out.png`：路径每次尝试唯一，`save_path_exists` 等价于「该 attempt 已有产物」，转入收据核查而非重试；resourceId 写入收据作为归属证据。
+
+已采纳的文件协议如下；无法获得完整证据时按 unknown 保持暂停：
 
 1. pending→sent 提交后请求外部操作，结果写入该 item/attempt 的 staging。网络请求与大文件复制均在数据库事务外。
 2. 完整解码校验、尺寸、大小、sha256、original 解析准备完成，写收据并刷新文件。收据中的外部 save_path 只能运行时使用，持久化的是项目相对路径。
@@ -815,7 +821,7 @@ Q02 已采纳：初版 `project.json.format_version=1` 与 `PRAGMA user_version=
 | C01「已采纳」 | 导入跳过终态 | skipped、image_id=NULL、error=duplicate_sha256；源完成含 skipped，导入后汇总 | 修改枚举，不增表 |
 | C02「已采纳」 | 固定 job 范围并保存逐图 outcome | progress_json 保存冻结 image_ids 与逐图结果，和标注同事务提交，计数由 outcome 重算 | 新增 jobs.progress_json，仍 8 表 |
 | C03「已采纳，按裁决修改」 | 费用运行策略 | cost_policy=deny/ask/allow，默认 ask，可改且下一张生效；确认仅本次 running 周期内存有效 | 新增 sources.cost_policy，不新增 runtime_json；pause_reason 无持久需求 |
-| C04「已采纳」 | 落盘收据 | 采用 §5.5 item/attempt 收据及暂存目录；unknown 不重放 | 不改字段；仅 Launcher save_path 实际行为仍待实测 |
+| C04「已采纳」 | 落盘收据 | 采用 §5.5 item/attempt 收据及暂存目录；unknown 不重放 | 不改字段；save_path 已实测（§5.5） |
 | C05「已采纳」 | attempts 与终态重试 | attempts 为尝试序号；用户重试 failed 时 done→paused 同事务发生 | 不增字段 |
 
 ## 11. 耦合点与待确认决策
@@ -826,7 +832,7 @@ Q02 已采纳：初版 `project.json.format_version=1` 与 `PRAGMA user_version=
 |---|---|---|
 | Q01 已采纳 | 小写原扩展名、新时间导出目录、不存外部绝对路径 | §2.1 |
 | Q02 已采纳 | format_version/user_version 对应，高版本拒绝 | §8 |
-| Q03 部分待实测 | 收据方案已采纳；仅 Launcher save_path 行为 `[待确认]` | §5.5 |
+| Q03 已定 | 收据方案已采纳；save_path 已实测 | §5.5 |
 | Q04 已采纳 | 重复 skipped 并汇总；清单存根内相对位置 | C01、§2.1 |
 | Q05/Q06 已采纳 | 补充状态边、终态重试、attempts 尝试序号 | §5 |
 | Q07 按裁决修改 | 全层并集+有版本边界的移除集；配置在 caption_config_json | §7.4 |
@@ -864,7 +870,7 @@ Q02 已采纳：初版 `project.json.format_version=1` 与 `PRAGMA user_version=
 
 ### 11.3 实现验收阻塞与明确限制
 
-全部裁决已并入基线，可按本文实施；F01 唯一剩余外部验证是 Launcher save_path 的真实落盘行为。未知证据保持 sent/paused，不阻塞基础 DAL 实现，也不提前宣称生成恢复适配器已验证。其它产品模块原有未决事项保留在 docs/05 第 13 章。
+全部裁决已并入基线，可按本文实施；Launcher save_path 落盘行为已于 2026-10-12 实测（见 §5.5），F01 无剩余外部验证项。未知证据保持 sent/paused，不阻塞基础 DAL 实现，也不提前宣称生成恢复适配器已验证。其它产品模块原有未决事项保留在 docs/05 第 13 章。
 
 SQL CHECK 不阻止绕过 DAL 直接手工 UPDATE 合法枚举之间的非法迁移；本项目所有业务写入必须经过受控 commands。若未来允许第三方直接改 DB，再评估触发器或独立写协议，不在本版引入第二套状态机实现。
 
