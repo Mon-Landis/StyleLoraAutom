@@ -1,0 +1,2 @@
+# Build backend only; F01 runtime uses the Python standard library.
+setuptools==80.9.0

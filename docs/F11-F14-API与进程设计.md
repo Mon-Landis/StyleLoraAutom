@@ -16,11 +16,11 @@
 | V | [F08–F12 视觉与执行器](F08-F12-视觉与执行器设计.md)，LLM、jobs、设备、扫描与重新分级 |
 | E | [F09–F10 标注编辑与导入导出](F09-F10-标注编辑与导入导出设计.md)，编辑、规则、方案、导出和标签库 |
 
-优先级为本次用户明确约束 → 05 及其已采纳 D 决议 → 各 F 模块规格 → 04 旧草案。本文统一传输合同，不改领域状态边、8 张业务表/93 列、单写连接或模块算法；未采纳的 C06–C16 不因出现在 API schema 中就启用。
+优先级为本次用户明确约束 → 05 及其已采纳 D 决议 → 各 F 模块规格 → 04 旧草案。本文统一传输合同，不改领域状态边、8 张业务表/93 列、单写连接或模块算法；已裁决不采纳的 C06、仅预留接口的 hardlink（C16）及其它未实现能力，不因出现在 API schema 中就启用。
 
 固定约束：Python 包为 `src/stylelora/`；FastAPI 单进程、单 Uvicorn worker、只绑定 `127.0.0.1`；一次打开一个项目；SQLite WAL、线程归属固定的单写连接；长任务走受生命周期管理的后台任务及 SSE。产品配置为 `%APPDATA%/StyleLoraAutom/`；DPAPI 密钥、Launcher 恢复日志和 WD 模型为 `%LOCALAPPDATA%/StyleLoraAutom/`；随机 API token 每次启动生成且不落盘。Tauri 后期接入同一服务接口，当前用浏览器。
 
-API 总表中的 MVP 指完成项目/导入/生成/基础 WD/规则与导出的后端合同；v1 指视觉、审图工作台扩展及辅助管理。前端 F14 本身仍归 v1，MVP API 不等于承诺 MVP 完成界面。F13/F16/F17/F18/F19/F20、clean/clean_nsfw、YOLO、非空导出处理链不增执行入口；F21 仅预留只读返回，F22/F23/F24 在表内明确覆盖。阶段细分建议见 Q07。
+API 总表中的 MVP 指完成项目/导入/生成/基础 WD/规则与导出的后端合同，以及审图编辑 UI（docs/08 U4，2026-10-13 裁决放进 MVP）；v1 指视觉与辅助管理。F14 中与审图编辑相关的界面归 MVP，其余阶段标记按 F14 文内标注 [待确认：F14 各组件阶段标记是否已逐项同步 U4]。F13/F16/F17/F18/F19/F20、clean/clean_nsfw、YOLO、非空导出处理链不增执行入口；F21 仅返回「剩余预估」只读结果（U2），F22/F23/F24 在表内明确覆盖。阶段细分见 Q07。
 
 ## 2. 进程结构、启动与关闭
 
@@ -396,7 +396,7 @@ A062请求为二选一：`{ids: list[int], target: ReviewStatus, expected_versio
 | A131 | GET | U/tags/catalog-status | 无 →revision/覆盖完整性/alias能力/翻译数量 | — | E§4、F22补齐 / MVP |
 | A132 | POST | U/validation/trigger | trigger/style_prompts或project_id →Issue[]/digest/可强制项 | 422 trigger:in_style_prompt | P§9、E§8、F22 / MVP |
 
-A125 未实现真实账号查询时返回 local_estimate 或 null：绝不把估算当余额；未采纳 G.C06 时 estimate_scope=process_observed，明确累计不完整。A124 聚合 P 的 Launcher 只读词库能力，不猜工具名，不让前端提交任意 MCP 方法。A132 正常校验结果用200 Issue[]（含硬错误），格式非法422；正式启动/导出门禁仍以422拒绝硬错误，existing_tag 仅警告可绑定摘要强制。
+A125 未实现真实账号查询时返回 local_estimate 或 null：绝不把估算当余额；G.C06 已裁决不采纳（U2）：A125 只返回「剩余预估」（对未完成 source_items 汇总单张 estimated_anlas；已发出的不累计、不跨重启保存），字段命名与 estimate_scope 取值 [待确认]。A124 聚合 P 的 Launcher 只读词库能力，不猜工具名，不让前端提交任意 MCP 方法。A132 正常校验结果用200 Issue[]（含硬错误），格式非法422；正式启动/导出门禁仍以422拒绝硬错误，existing_tag 仅警告可绑定摘要强制。
 
 ### 5.12 近似重复与 WD 安装辅助合同
 
@@ -490,7 +490,7 @@ CLI路径是用户明确的本地输入，可通过当前用户命名管道授�
 
 ### 7.3 扫描与清理合同
 
-项目扫描只读：images按keep/unreviewed/reject/source拆分，cache、exports（含report）、DB/WAL/SHM、迁移备份、`.pending`、其它项目文件分别统计；逻辑分类不重复加总，missing记录与实际文件字节分开。Launcher外部画廊副本不计入。阈值建议20GiB/100GiB暂用可配置值，单位选择待Q05，不把旧文档GB字样悄悄当已定二进制。
+项目扫描只读：images按keep/unreviewed/reject/source拆分，cache、exports（含report）、DB/WAL/SHM、迁移备份、`.pending`、其它项目文件分别统计；逻辑分类不重复加总，missing记录与实际文件字节分开。Launcher外部画廊副本不计入。存储提醒阈值已裁决（docs/08 U3）：可配置，默认5GB（十进制），统计不计下载的模型权重（WD tagger 等），界面明示单位。
 
 跨项目只访问最近记录，目录大小可直接只读扫描；按审图拆分仅当前打开项目提供，别的项目显示总量/不可访问/正在占用等状态。不开第二个可写ProjectHandle，不迁移、不恢复、不扫描全盘。统计有as_of、errors和partial，锁或权限失败逐项报告，不伪造0字节。
 
@@ -602,7 +602,7 @@ Host严格匹配实际 `127.0.0.1:<port>`（开发代理也发送此Host），�
 | 冲突 | 原文位置与差异 | 本文统一合同 / 保留边界 |
 |---|---|---|
 | X01 路由作用域 | G§8使用/api/sources；V§9/E§13项目带project_id；P§9把字典/tasks放prompt-production | 项目统一P，产品统一U；dictionary/prompt-task拆资源；旧草案路径不注册兼容别名，尚无实现用户无需迁移 |
-| X02 默认分页 | D内部PageRequest及P/V/E HTTP草案200/1000；本任务要求50 | HTTP统一50/1000、不透明keyset cursor；D内部200不改；不把offset引入DAL |
+| X02 默认分页 | D内部PageRequest及P/V/E HTTP草案200/1000；本任务要求50 | HTTP统一50/1000、不透明keyset cursor；D内部200不改；不把offset引入DAL；A059 定位用 around_id（已裁决，docs/08 U1，F14-C31 不用 offset） |
 | X03 错误DTO | P使用message/issues；V使用safe_message；E使用details/request_id | 统一error信封/message/issues/details/retry_action/outcome；领域原因码保留，不透传供应商异常 |
 | X04 并发前置条件 | 产品revision、方案updated_at、manual read_set、源expected状态/attempt分散 | HTTP统一If-Match/expected_versions；服务转换为现有F01 CAS，完整读集仍强制，不新增版本列 |
 | X05 SSE | G按源events/sequence，P按任务events，V按jobs/events且epoch | 单U/events、epoch:sequence与topics；快照恢复统一；每图提交事件保留，SSE非持久队列 |
@@ -611,8 +611,8 @@ Host严格匹配实际 `127.0.0.1:<port>`（开发代理也发送此Host），�
 | X08 token与文件选择缺口 | 05§13#18未定token；V/E禁止绝对路径却没有浏览器root_handle获取接口 | 一次code换内存Bearer、fetch SSE/图片；受控picker/CLI管道创建用途grant，见Q01–Q03 |
 | X09 F22强制 | P§10概括existing_tag为422；05§10.4/E§8允许已有tag警告强制 | 校验200 Issue[]；正式导出existing_tag允许摘要强制，style冲突硬422；无完整索引仍unverifiable |
 | X10 标签规范化 | G/P折叠连续空白/alias，D/E合并键严格不折叠 | API原样使用E.C11分层建议：历史合并遵D，新输入解析策略独立；不静默重写历史或去重键 |
-| X11 预留能力与schema | E方案schema列auto/hardlink；C14/C16未采纳，pipeline非空可存 | capability标支持状态；auto/hardlink执行入口禁用，pipeline仅保存执行501，不把可存等同可跑 |
-| X12 费用与账号 | 04旧uc_preset可编辑、F21像完整源累计；05/G要求固定None，G.C06未采纳 | 能力固定uc_preset=null/quality_toggle=false；账户估算仅process_observed，null余额，绝不参与费用决策 |
+| X11 预留能力与schema | E方案schema列auto/hardlink；C14/C16未采纳，pipeline非空可存 | capability标支持状态；auto执行入口禁用；hardlink 已裁决（docs/08 U5）：MVP 只复制，仅预留接口、不暴露入口，请求返回 unsupported；pipeline仅保存执行501，不把可存等同可跑 |
+| X12 费用与账号 | 04旧uc_preset可编辑、F21像完整源累计；05/G要求固定None，G.C06已裁决不采纳（U2） | 能力固定uc_preset=null/quality_toggle=false；F21 只做「剩余预估」（对未完成 source_items 汇总单张 estimated_anlas，已发出的不累计、不跨重启保存），null余额，绝不参与费用决策 |
 | X13 blocklist/导入段落 | 05§10.3待确认剔除；E.C12建议warn；05§8.2 unknown→NL与§10.5无第二段不建NL冲突 | 不在API层裁决算法；blocklist显式选方案，歧义sidecar按E保守拒绝；沿C12/C15待原负责人确认 |
 | X14 默认导入/导出方案 | D默认导入唯一、导出无is_default；E泛称方案默认切换 | 仅import有set-default；删除最后export拒绝，绝不为export虚构is_default字段 |
 | X15 目录与恢复 | 05产品路径未决，G/V产品恢复/WD位置是推荐；本任务已明确路径 | 直接采用APPDATA配置、LOCALAPPDATA秘密/恢复/WD；项目收据仍images/.pending，不当cache清除 |
@@ -621,17 +621,17 @@ Host严格匹配实际 `127.0.0.1:<port>`（开发代理也发送此Host），�
 
 ## 12. 建议变更 C17–C23
 
-以下仅建议同步的合同，未修改任何参考文档，也不宣称已获架构裁决；沿既有C01–C16编号。已经明确的单进程/单项目/DAL/状态边不进入重决策。
+以下为建议同步的合同；C17–C23 已按推荐采纳（docs/08 U6，2026-10-13），来源文档同步状态以各文档为准；沿既有C01–C16编号。已经明确的单进程/单项目/DAL/状态边不进入重决策。
 
 | 编号 | 建议变更 | 推荐与未采纳边界 |
 |---|---|---|
-| C17 | 各F草案统一资源路径、50分页、错误体和版本前置条件 | 采用§4–5并由后续维护任务同步来源；当前仅本文是汇总提案，不同时实现两套路由 |
-| C18 | 补齐05§11.3 token下发 | 采用一次性fragment code→POST换内存token；fetch SSE/图片；未裁决前不开放匿名token或持久浏览器秘密 |
-| C19 | 统一SSE为单事件总线和明确补发/背压合同 | 采用§6；进程有界缓存+事实GET，每图完成通知；不新增持久事件表 |
-| C20 | 明确HTTP幂等键分层保证和CAS适配 | 采用§4.3，会话去重与既有产品/DAL凭据组合；不新增通用请求账本，不承诺跨重启exactly-once |
-| C21 | 补齐浏览器路径授权及CLI附着通道 | 采用用途绑定PathGrant、原生picker、当前用户ACL管道；未裁决时仅CLI受控路径入口，不放开HTTP任意path |
-| C22 | 明确辅助任务/导出资源合同与清理两阶段协议 | 采用OperationView+各领域原状态机、preview/digest/confirm；不把辅助任务塞jobs，不暗删missing历史 |
-| C23 | 对齐安全基线、阶段标注和配置/恢复目录说明 | 固定loopback/Host/Origin/上传边界，APPDATA与LOCALAPPDATA分工；保留各模块未定能力，不扩大MVP模型/插件范围 |
+| C17 | 各F草案统一资源路径、50分页、错误体和版本前置条件 | 采用§4–5并由后续维护任务同步来源；当前仅本文是汇总提案，不同时实现两套路由（已采纳推荐，2026-10-13） |
+| C18 | 补齐05§11.3 token下发 | 采用一次性fragment code→POST换内存token；fetch SSE/图片；未裁决前不开放匿名token或持久浏览器秘密（已采纳推荐，2026-10-13） |
+| C19 | 统一SSE为单事件总线和明确补发/背压合同 | 采用§6；进程有界缓存+事实GET，每图完成通知；不新增持久事件表（已采纳推荐，2026-10-13） |
+| C20 | 明确HTTP幂等键分层保证和CAS适配 | 采用§4.3，会话去重与既有产品/DAL凭据组合；不新增通用请求账本，不承诺跨重启exactly-once（已采纳推荐，2026-10-13） |
+| C21 | 补齐浏览器路径授权及CLI附着通道 | 采用用途绑定PathGrant、原生picker、当前用户ACL管道；未裁决时仅CLI受控路径入口，不放开HTTP任意path（已采纳推荐，2026-10-13） |
+| C22 | 明确辅助任务/导出资源合同与清理两阶段协议 | 采用OperationView+各领域原状态机、preview/digest/confirm；不把辅助任务塞jobs，不暗删missing历史（已采纳推荐，2026-10-13） |
+| C23 | 对齐安全基线、阶段标注和配置/恢复目录说明 | 固定loopback/Host/Origin/上传边界，APPDATA与LOCALAPPDATA分工；保留各模块未定能力，不扩大MVP模型/插件范围（已采纳推荐，2026-10-13） |
 
 **C30–C34（来自 F14）已并入**：C30见§4.1 ImageView、A059/A060；C31见§4.2 ImagePage/around_id、A059；C32见§4.3及A062/A142（会话预览保存逐图CAS，仍限5000张）；C33见§4.2过滤及§5.13 A141；C34见A063/A064与§7.1缓存头；验收追加T43–T48。待确认：超过5000张的单事务全选需要另议容量边界，本次不扩大既定批量上限。
 
@@ -639,13 +639,13 @@ Host严格匹配实际 `127.0.0.1:<port>`（开发代理也发送此Host），�
 
 | 编号 | 待确认 | 推荐及实施边界 |
 |---|---|---|
-| Q01 | 浏览器token下发与刷新体验 | 采用60秒单次code、内存token、刷新需ui重新引导；不落盘优先。可评估内存cookie替代需另审CSRF，本文不引入 |
-| Q02 | 产品单实例锁/管道的Windows实现与独立CLI模式 | SID命名mutex+当前用户ACL命名管道，校验对端身份；无实例短命令可同服务容器，open/ui启动serve；不靠PID文件锁 |
-| Q03 | 浏览器选择本地目录所用原生对话框依赖 | 使用Windows原生目录/目标选择器适配，picker单在途，返回用途grant；无桌面时CLI授权，不开放任意HTTP路径 |
-| Q04 | 优雅关闭30秒宽限期与不可取消原生工作 | 推荐可配置30秒，外部未知保收据/日志；文件副作用线程未退出不得释放项目锁，UI显示draining，强退走恢复 |
-| Q05 | 限额、阈值和媒体参数 | 推荐JSON16MiB/上传10MiB/单图100MiB与100MP/缩略图256或512；存储提醒20GiB/100GiB且界面明示单位，均须性能验证 |
-| Q06 | 无DB持久请求账本时是否接受跨重启幂等边界 | 推荐接受会话24小时缓存+现有自然键/产品凭据；未知创建人工核查，不加表。若需完整持久去重另提架构变更 |
-| Q07 | 04旧F清单与新编辑器定位的MVP/v1拆分 | 推荐本文§1/§5：基础API/WD/导出MVP，审图编辑UI配套、视觉与辅助管理v1；F14界面仍独立设计，预留项不提前启用 |
-| Q08 | 内置预设不可变、blocklist默认值及领域未决选项如何呈现 | 推荐内置预设只读、自建可改；blocklist在源裁决前显式选择；auto/hardlink/nsfw模板等未采纳能力禁用并给reason，不自动采纳C06–C16 |
+| Q01 | 浏览器token下发与刷新体验 | 采用60秒单次code、内存token、刷新需ui重新引导；不落盘优先。可评估内存cookie替代需另审CSRF，本文不引入（已采纳推荐，2026-10-13） |
+| Q02 | 产品单实例锁/管道的Windows实现与独立CLI模式 | SID命名mutex+当前用户ACL命名管道，校验对端身份；无实例短命令可同服务容器，open/ui启动serve；不靠PID文件锁（已采纳推荐，2026-10-13） |
+| Q03 | 浏览器选择本地目录所用原生对话框依赖 | 使用Windows原生目录/目标选择器适配，picker单在途，返回用途grant；无桌面时CLI授权，不开放任意HTTP路径（已采纳推荐，2026-10-13） |
+| Q04 | 优雅关闭30秒宽限期与不可取消原生工作 | 推荐可配置30秒，外部未知保收据/日志；文件副作用线程未退出不得释放项目锁，UI显示draining，强退走恢复（已采纳推荐，2026-10-13） |
+| Q05 | 限额、阈值和媒体参数 | 推荐JSON16MiB/上传10MiB/单图100MiB与100MP/缩略图256或512；存储提醒阈值已裁决（docs/08 U3）：可配置，默认5GB（十进制），不计下载的模型权重，界面明示单位；其余限额须性能验证（已采纳推荐，2026-10-13） |
+| Q06 | 无DB持久请求账本时是否接受跨重启幂等边界 | 推荐接受会话24小时缓存+现有自然键/产品凭据；未知创建人工核查，不加表。若需完整持久去重另提架构变更（已采纳推荐，2026-10-13） |
+| Q07 | 04旧F清单与新编辑器定位的MVP/v1拆分 | 已裁决（docs/08 U4，2026-10-13）：基础API/WD/导出与审图编辑UI均为MVP；视觉与辅助管理v1；F14界面独立设计，预留项不提前启用 |
+| Q08 | 内置预设不可变、blocklist默认值及领域未决选项如何呈现 | 推荐内置预设只读、自建可改；blocklist在源裁决前显式选择；auto/hardlink（U5）/nsfw模板等未启用能力禁用并给reason；C06 已裁决不采纳，其余 C11–C16 见 F09/F06 裁决（已采纳推荐，2026-10-13） |
 
 交付验收：本文仅新增一个设计文件；140条方法/路径、42个最小测试规格、C17–C23七条提案、Q01–Q08八项待确认。无实现代码、无测试执行、无提交，也未改动其它文档。

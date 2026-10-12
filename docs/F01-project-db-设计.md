@@ -858,7 +858,7 @@ Q02 已采纳：初版 `project.json.format_version=1` 与 `PRAGMA user_version=
 | #9 执行器 | 采用 Q09，file_missing 跳过有逐图原因与 skipped_count，依赖 C02 |
 | #10 WD | 显存未知先禁自动 GPU 调度，允许用户选择受支持的 CPU/设备；不可用写批次级错误，不造成功 annotation；设备策略归 F12 |
 | #11 NSFW | 采用 Q10；本地 detector 不实现。未来仅二值 nsfw 推荐映射 questionable 并记录实际模型/阈值，需启用时再确认，不影响现有 detector 枚举 |
-| #12 存储 | 暂沿用 20GB/100GB 可配置提示，阈值在产品层；missing 状态规则见 Q09；清理需二次确认由上层保证 |
+| #12 存储 | 已裁决（docs/08 U3）：阈值可配置，默认 5GB（十进制），不计下载的模型权重，阈值在产品层；missing 状态规则见 Q09；清理需二次确认由上层保证 |
 | #13 提示词生产 | 过滤/词典其余字段不进 project.db；词条 rating 先用于产品层筛选，不能冒充图像已验证分级；source_items 不增加生产溯源字段 |
 | #14 费用策略 | 已定：每张非零估算按 deny/ask/allow，含首张非零；ask 确认仅工作周期有效，独立 cost_policy 可改 |
 | #15 尺寸预设 | 采用 512×768；内置不可覆写/删除；F01 仅校验启动快照三组 64 倍数与默认 aspect，已启动配置不随产品变化 |

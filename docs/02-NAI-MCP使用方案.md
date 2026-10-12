@@ -90,5 +90,5 @@ PNG 元数据里有：`prompt`、`seed`、`steps`、`scale`、`sampler`、`v4_pr
 - 每次升级 Launcher 后重跑 `probe_capabilities`，对比工具列表和 schema
 - 审计日志 `agent/mcp-audit-v1.jsonl`（Launcher 数据目录下）可用于对账扣费
 - 未实测项：付费确认路径、`interrogate_image` 质量、并发会话下的表现
-- 已实测（2026-10-12）：**没有账号/额度查询工具**（98 个工具与 `get_application_context` 均无相关字段），能拿到的只有 `prepare_generation` 的 `estimated_anlas`（单次预估，非余额），F21 走本地累计估算；`save_path` 行为见第 3 节
+- 已实测（2026-10-12）：**没有账号/额度查询工具**（98 个工具与 `get_application_context` 均无相关字段），能拿到的只有 `prepare_generation` 的 `estimated_anlas`（单次预估，非余额），F21 走本地「剩余预估」（对未完成条目汇总单张预估，不累计已发出的，见 docs/08 U2）；`save_path` 行为见第 3 节
 - 实测中 prepare 回显的 steps 为 28（页面设置原为 14），说明用户页面设置可能已变；适配器每次开跑前必须重读 `get_generation_settings`，不能依赖旧快照
