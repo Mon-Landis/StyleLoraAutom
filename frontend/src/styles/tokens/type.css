@@ -1,0 +1,89 @@
+/* 字体、字号、间距、圆角、阴影、层级、密度。数值单位仅出现在令牌文件。 */
+:root {
+  --font-display: 'Inter', 'Helvetica Neue', Helvetica, Arial, 'Noto Sans SC', 'Microsoft YaHei UI', sans-serif;
+  --font-text: var(--font-display);
+  --font-mono: 'JetBrains Mono', 'Cascadia Mono', Consolas, 'SFMono-Regular', monospace;
+
+  --font-size-2xs: 0.625rem;
+  --font-size-xs: 0.6875rem;
+  --font-size-sm: 0.75rem;
+  --font-size-md: 0.8125rem;
+  --font-size-lg: 0.9375rem;
+  --font-size-xl: 1.25rem;
+  --font-size-2xl: 1.75rem;
+  --font-size-display: 3rem;
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-bold: 700;
+  --line-height-tight: 1.15;
+  --line-height-normal: 1.4;
+  --line-height-dense: 1.25;
+  --tracking-label: 0.2em;
+  --tracking-display: -0.02em;
+
+  --space-0: 0;
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 8px;
+  --space-4: 12px;
+  --space-5: 16px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 48px;
+
+  --radius-0: 0;
+  --radius-sm: 1px;
+  --radius-md: 2px;
+  --radius-lg: 4px;
+  --radius-pill: 999px;
+
+  --shadow-0: none;
+  --shadow-1: none;
+  --shadow-2: 0 1px 2px color-mix(in srgb, var(--base-neutral-900) 18%, transparent);
+  --shadow-popover: 0 4px 16px color-mix(in srgb, var(--base-neutral-900) 22%, transparent);
+
+  --stroke-hairline: 1px;
+  --stroke-focus: 2px;
+  --focus-offset: 2px;
+  --z-grid: 1;
+  --z-sticky: 10;
+  --z-popover: 100;
+  --z-modal: 200;
+  --z-toast: 300;
+
+  --size-icon: 1em;
+  --size-nav-width: 168px;
+  --size-topbar-height: 36px;
+  --size-statusbar-height: 24px;
+  --size-detail-width: 380px;
+  --size-dialog-width: 480px;
+  --size-drawer-width: 440px;
+  --size-hit-min: 24px;
+  --thumb-min: 120px;
+  --size-badge: 18px;
+  --stage-checker-size: 12px;
+  --deco-pixel-size: 12px;
+  --deco-pixel-gap: 2px;
+  --deco-halftone-dot: 1px;
+  --deco-halftone-pitch: 6px;
+  --hold-danger-ms: 1200ms;
+  --hold-secondary-ms: 800ms;
+  --toast-ttl: 8000ms;
+}
+
+:root,
+[data-density='compact'] {
+  --row-height: 24px;
+  --control-height: 26px;
+  --grid-gap: 4px;
+  --grid-cell-min: 96px;
+  --grid-cell-height: 112px;
+}
+
+[data-density='comfortable'] {
+  --row-height: 32px;
+  --control-height: 32px;
+  --grid-gap: 8px;
+  --grid-cell-min: 148px;
+  --grid-cell-height: 168px;
+}

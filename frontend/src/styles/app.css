@@ -1,0 +1,79 @@
+/* 应用布局与业务组件结构样式：只引用令牌，不写死颜色/间距/字号。 */
+#root, .shell { height: 100%; display: flex; flex-direction: column; min-height: 0; }
+.shell__main { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
+.page { padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-3); max-width: 960px; }
+
+.topbar {
+  display: flex; align-items: center; gap: var(--space-3);
+  height: var(--size-topbar-height); padding: 0 var(--space-3);
+  background: var(--color-surface); border-bottom: 1px solid var(--color-border);
+}
+.topbar__nav { display: flex; gap: var(--space-1); }
+.topbar__nav a { padding: var(--space-1) var(--space-2); color: var(--color-text-muted); text-decoration: none; }
+.topbar__nav a.active { color: var(--color-text-primary); border-bottom: 2px solid var(--color-accent); }
+.topbar__spacer { flex: 1; }
+.conn { display: inline-flex; align-items: center; gap: var(--space-1); font-size: var(--font-size-sm); }
+.conn__dot { width: 8px; height: 8px; border-radius: var(--radius-pill); background: var(--color-text-muted); }
+.conn__dot--success { background: var(--color-success); }
+.conn__dot--warning { background: var(--color-warning); }
+.conn__dot--danger { background: var(--color-danger); }
+.conn__dot--info { background: var(--color-info); }
+
+.projectbar { display: flex; align-items: center; gap: var(--space-2); }
+.seg { display: inline-flex; gap: 1px; }
+.form-row { display: flex; align-items: flex-end; gap: var(--space-2); flex-wrap: wrap; }
+.input-narrow { width: 8ch; }
+.pre { margin: 0; font-family: var(--font-mono); font-size: var(--font-size-sm); white-space: pre-wrap; }
+
+.dialog__scrim { position: fixed; inset: 0; display: grid; place-items: center; background: color-mix(in srgb, var(--color-text-primary) 40%, transparent); z-index: 100; }
+.dialog { min-width: 360px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); box-shadow: var(--shadow-popover); }
+.dialog__head { display: flex; justify-content: space-between; align-items: center; padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--color-border); }
+.dialog__body { padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); }
+
+.workbench { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 420px; gap: var(--space-2); padding: var(--space-2); }
+.workbench__list { min-height: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+.workbench__side { min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: var(--space-2); }
+.filterbar, .toolbar { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.row, .check { display: flex; align-items: center; gap: var(--space-2); }
+.list__row { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-1) 0; border-bottom: 1px solid var(--color-border); min-height: var(--row-height); }
+
+.grid { position: relative; flex: 1; min-height: 0; overflow: auto; background: var(--color-surface-sunken); border: 1px solid var(--color-border); outline: none; }
+.grid:focus-visible { outline: 2px solid var(--color-focus-ring); }
+.grid__cell { position: absolute; top: 0; left: 0; }
+.thumb { position: relative; width: 100%; height: 100%; padding: 0; display: block; overflow: hidden; cursor: pointer;
+  background: var(--color-surface); border: 2px solid var(--color-border); border-radius: var(--radius-sm); }
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb__ph { display: block; width: 100%; height: 100%; background: var(--color-deco-halftone); }
+.thumb--keep { border-color: var(--color-review-keep); }
+.thumb--reject { border-color: var(--color-review-reject); opacity: 0.6; }
+.thumb.is-selected { box-shadow: inset 0 0 0 2px var(--color-accent); }
+.thumb.is-active { outline: 2px solid var(--color-focus-ring); outline-offset: 1px; }
+.thumb__status, .thumb__warn { position: absolute; display: inline-flex; padding: var(--space-1);
+  background: var(--color-surface); border-radius: var(--radius-sm); }
+.thumb__status { right: var(--space-1); bottom: var(--space-1); }
+.thumb__warn { left: var(--space-1); top: var(--space-1); color: var(--color-warning); }
+
+.preview { display: flex; flex-direction: column; gap: var(--space-1); }
+.preview__canvas { position: relative; height: 320px; display: grid; place-items: center; overflow: auto; border: 1px solid var(--color-border); background: var(--stage-dark); }
+.preview[data-stage='white'] .preview__canvas { background: var(--stage-solid-white); }
+.preview[data-stage='gray'] .preview__canvas { background: var(--stage-solid-gray); }
+.preview[data-stage='black'] .preview__canvas { background: var(--stage-solid-black); }
+.preview[data-stage='dark'] .preview__canvas { background: var(--stage-dark); }
+.preview[data-stage='checker'] .preview__canvas {
+  background-color: var(--stage-checker-a);
+  background-image: conic-gradient(var(--stage-checker-b) 25%, transparent 0 50%, var(--stage-checker-b) 0 75%, transparent 0);
+  background-size: calc(var(--stage-checker-size) * 2) calc(var(--stage-checker-size) * 2);
+}
+.preview__canvas img { max-width: none; image-rendering: auto; }
+.preview__canvas.is-fit img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.preview__err { color: var(--color-danger); }
+.preview__nav { display: flex; justify-content: space-between; }
+
+.anno, .anno__edit, .anno__merged, .layers { display: flex; flex-direction: column; gap: var(--space-2); }
+.layer { display: flex; align-items: flex-start; gap: var(--space-2); }
+.layer__text, .anno__tags, .anno__nl { font-family: var(--font-mono); font-size: var(--font-size-sm); overflow-wrap: anywhere; }
+.job { display: flex; align-items: center; gap: var(--space-2); }
+.projectbar__name { font-weight: var(--font-weight-medium); }
+.projectbar__msg { color: var(--color-text-muted); font-size: var(--font-size-sm); }
+.topbar__brand { display: inline-flex; align-items: center; gap: var(--space-2); font-weight: var(--font-weight-bold); }
+.list { display: flex; flex-direction: column; }

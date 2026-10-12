@@ -1,0 +1,25 @@
+/* 语义派生：状态底色、审图状态、分级，全部引用语义色。 */
+:root {
+  --color-success-subtle: color-mix(in srgb, var(--color-success) var(--mix-subtle), var(--color-surface));
+  --color-warning-subtle: color-mix(in srgb, var(--color-warning) var(--mix-subtle), var(--color-surface));
+  --color-danger-subtle: color-mix(in srgb, var(--color-danger) var(--mix-subtle), var(--color-surface));
+  --color-info-subtle: color-mix(in srgb, var(--color-info) var(--mix-subtle), var(--color-surface));
+
+  --color-review-unreviewed: var(--color-text-muted);
+  --color-review-keep: var(--color-success);
+  --color-review-reject: var(--color-danger);
+  --color-review-unreviewed-subtle: color-mix(in srgb, var(--color-text-muted) var(--mix-subtle), var(--color-surface));
+  --color-review-keep-subtle: var(--color-success-subtle);
+  --color-review-reject-subtle: var(--color-danger-subtle);
+
+  --color-rating-general: var(--color-text-muted);
+  --color-rating-sensitive: var(--color-info);
+  --color-rating-questionable: var(--color-warning);
+  --color-rating-explicit: var(--color-danger);
+
+  --overlay-reject-pattern: repeating-linear-gradient(
+    135deg,
+    transparent 0 var(--space-3),
+    var(--color-review-reject-subtle) var(--space-3) var(--space-4)
+  );
+}
