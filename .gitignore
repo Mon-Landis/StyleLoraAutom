@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# 项目数据与产物（不入库）
+*.slproj/
+data/
+dataset/
+exports/
+
+# 本地密钥与环境
+.env
+.env.*
+secrets.json
+
+# 编辑器与系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
