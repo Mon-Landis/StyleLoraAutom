@@ -124,7 +124,7 @@ DI：lifespan 构建 Runtime 单例（产品服务、LLM 闸门、EventBus、Tas
 | PathGrant | `grant_id: UUID, purpose: Literal[project_create,project_open,import_root], display_name: str, expires_at: UTC, project_id: UUID或null`；绝对路径仅注册表内存 |
 | SourceStart | 判别联合：`kind=nai, seeds: FrozenSeeds`；或 `kind=import, preview_id: UUID, digest: str, root_handle: UUID`；不接 task_id/字典引用进入项目 |
 | SourceView | D.SourceRow 加 `counts: ItemCounts, version, runtime: {cycle_id: UUID或null, pause_reason: str或null, restore_pending: bool, in_flight: int}`；runtime 不落库 |
-| ImageView | D.ImageRow 的安全投影，加 `annotation_coverage: object, version, original_url: str, thumbnail_url: str`；png_meta 仅详情按需返回 |
+| ImageView | D.ImageRow 的安全投影，加 `width: int>0, height: int>0, has_alpha: bool, annotation_coverage: object, version, original_url: str, thumbnail_url: str`；尺寸/透明通道为入库元数据只读投影，列表与详情均返回，missing仍保留；png_meta 仅详情按需返回 |
 | AnnotationView / ManualEdit | E §3/5；完整五层 current/缺失 refs，tags 为 `{tag: str, conf: float或null}[]`；NL 写入由 write_nl 显式控制 |
 | JobView | D.JobRow 安全投影、version；列表省略巨大的 progress_json，逐图 outcomes 走分页；详情不含 URL/秘密 |
 | PromptTaskView | P.TaskView 去除内联 outcomes，增加计数和 outcomes_url；字段 ready/coverage/revision 保留 |
@@ -137,18 +137,26 @@ DI：lifespan 构建 Runtime 单例（产品服务、LLM 闸门、EventBus、Tas
 | RoleMap / Preset | 五个已启用角色映射 `{endpoint_id:UUID,model:str}`或null，clean 两角色仅 null；preset 为 `{preset_id:UUID,name:str,builtin:bool,sizes:Mapping[Aspect,PixelSize],revision:int}` |
 | Scope / ImageQuery | selected_ids 非空整数数组与 filter 二选一；filter 是白名单 source_ids/review_statuses/rating/file_missing/layer 状态；不接 SQL/任意表达式 |
 | CleanupConfirmation | `preview_id: UUID, digest: str, confirm: Literal[true]`，绑定目标项目/清理类型/候选文件身份与显示统计 |
+| ImagePage | `Page[ImageView]` 加 `total: int>=0, start_index: int>=0, anchor_index: int或null`；索引从0起，total为本次快照中筛选且不超过upper_id的总数 |
+| ReviewResult | `items: list[{image: ImageView, old_review_status: ReviewStatus}]`，按image_id升序，包含no-op项；ReviewStatus沿D既有枚举；image携带提交后的version |
+| ReviewPreview | `PreviewView` 加 `total: int>=0`；服务端保存规范化query、成员ID和逐图Version，不向客户端传整批ID；15分钟会话有效 |
+| ImageStats | `{total: int>=0, groups: list[{by: Literal[review_status,rating,source_id,annotation_coverage], buckets: list[{key: str或int或null, count: int>=0}]}]}`；rating用有效rating，source_id为整数，coverage键为complete/partial/none |
 
 FrozenSeeds、SourceDraft/Profile、SamplingRequest、Dictionary、RuleSpec、ImportSchemeInput、ExportSchemeInput、BackendCapabilities、CatalogHit 等严格引用 P/G/E/V 对应 schema；表内请求只允许所列业务字段，DB 时间、attempts、is_current、merge_meta、model_name 等由服务生成，不能凭响应 DTO 全量回传取得写权。
 
 ### 4.2 分页、过滤、排序
 
-全部 HTTP 列表默认 `limit=50`，范围 1..1000，超界 422，不静默截断；内部 DAL 仍可每页 200，不修改 F01。统一 `cursor`，不接 page/offset。首批生成 upper_id；后续游标含 project generation/resource/filter digest/sort/last key/upper bound，HMAC 校验，不能跨列表或改过滤复用。
+全部 HTTP 列表默认 `limit=50`，范围 1..1000，超界 422，不静默截断；内部 DAL 仍可每页 200，不修改 F01。统一 `cursor`，不接 page/offset；A059另支持下述around_id定位。首批生成 upper_id；后续游标含 project generation/resource/filter digest/sort/last key/upper bound，HMAC 校验，不能跨列表或改过滤复用。
 
 DB 列表默认 `sort=id` 升序；支持 `sort=-id`，annotations 历史默认 -id，source_items 对外按 item_id，内部执行仍按 seq。别的 sort 只有能力清单声明才可用：跨项目 storage 允许 `-total_bytes,project_id`；近似 pair 为 `distance,left_id,right_id`；产品 UUID 列表为 `name,id`，来自冻结排序快照；任务 outcomes 按冻结 index 或 image_id。不得把客户端字段直接插入 SQL。
 
 多值过滤用重复 query 参数，例如 `review_status=keep&review_status=unreviewed`，同字段 OR、字段间 AND；未知 filter/sort 422；`q` 仅用于名称/标签，不作为正则。缺省 images 展示所有审图状态并包含 missing，执行器/规则/导出各按既定 Scope 默认，不混用列表默认。范围、预览和导出都在服务端物化，不能把浏览器当前页误作全选。
 
 普通 DB 分页逐页快照，upper_id 仅排除后来插入，过滤值变化可能改变成员；不保证跨页一致性。产品列表游标绑定产品 revision，变化返回 409 `page:stale`。一致性导出/扫描先冻结元数据，不能长期持读事务等待客户端翻页。需要总计走统计/预览接口，不把 total 默认为准确快照。
+
+A059为total例外：items、total和索引在同一短读事务计算，跨请求仍遵上述逐页快照。`around_id: int>0`与cursor互斥，按当前过滤/排序求该图索引k，返回从`floor(k/limit)*limit`开始的一页，anchor_index=k、start_index为页首索引；普通分页anchor_index=null，start_index为本次快照页首位置，空页为total。目标不存在或不在过滤范围返回404 `resource:not_found`；空集合total=0。定位不新增DAL offset合同，后续仍用next_cursor。
+
+A059/A141/A142共用图片过滤：HTTP重复参数`source_id: int>0`、`review_status: ReviewStatus`、`rating: Rating`映射ImageQuery的source_ids/review_statuses/rating数组；`file_missing: bool`可选；`layer: str`取E既有层名白名单，配`annotation_coverage: Literal[complete,partial,none]`可选。coverage按所选层的current有效内容计算（未指定layer则用ImageView全部适用层）：全部覆盖/部分覆盖/无覆盖；空适用层集归none。同字段OR、字段间AND，未知值422，rating沿D有效rating枚举。query请求体仅含上述规范字段，不含分页/排序；列表sort仍按能力白名单。
 
 ### 4.3 CAS、版本与请求幂等
 
@@ -163,6 +171,10 @@ version 是带资源身份及项目代次的服务端令牌：产品 revision、
 持久保证只来自既有机制：jobs 稳定 batch_id、字典 operations、prompt task request_key、source 全量 seeds/config、item+attempt、F01 outcomes；其余创建仅会话去重。相同 key 在进程重启后不得自动重试无持久凭据的创建/规则/导出。客户端遇网络断开先 GET 状态/日志/report；CommitUnknown 返回 outcome=unknown、retry_action=reconcile、retryable=false，绝不指示重发付费请求。
 
 同状态控制可 no-op，但不能把“再次运行一周期”误当重复 resume；成功凭据优先。source confirm-cost 还必须校验 cycle_id 和 ask 策略，普通 resume 不带费用同意。终态 job/prompt 重做创建新实体；source failed item 重试后 paused，需明确 resume。
+
+A062请求为二选一：`{ids: list[int], target: ReviewStatus, expected_versions: Mapping[str,Version]}`，或`{query: ImageQuery, expected_total: int>=0, preview_id: UUID, digest: str, target: ReviewStatus}`。query先经A142冻结逐图前置条件，提交时在同一writer事务重新展开，比较规范query、完整成员集、expected_total及全部旧version，再批量更新；仅数量一致不能替代CAS。差异409 `concurrency:version_conflict`、过期410 `preview:expired`、缺前置条件428；任一失败整批回滚。两模式均最多5000张，超限413 `batch:too_large`，不自动拆批；空query结果可成功返回空items。
+
+撤销仍走A062的ids模式，以互斥的`targets: Mapping[str,ReviewStatus]`替代target：逐张填入上次old_review_status，expected_versions取上次返回image.version，映射键须与ids完全一致；并发改动使整批409，不能覆盖。A062及A142均要求Idempotency-Key；同键同摘要先重放原结果（含旧状态）再检查CAS，不重新展开query，异摘要409；撤销使用新键。只承诺§4.3会话去重，重启/结果未知先核查，预览不新增持久账本。
 
 ### 4.4 错误体和 HTTP 映射
 
@@ -187,9 +199,9 @@ version 是带资源身份及项目代次的服务端令牌：产品 revision、
 
 上游 401/403 是配置问题，映射 503 `llm:unauthorized`，不是本地 API 身份失效；上游 429 的令牌轮换归 V，不让浏览器另建重试层。202 后的错误进入实体状态/任务 error/SSE，而不是试图改已经返回的 HTTP 状态。item skipped、job skipped、规则零变化、预览 warning 均不是 HTTP 错误。
 
-## 5. API 总表（140 条）
+## 5. API 总表（142 条）
 
-每行恰为一个方法+路径；A001–A140 连续编号。HTTP 表共 **140 条**，不把 HEAD/OPTIONS 自动处理、静态资源、CLI 管道或未启用的旧路由别名算入条数。所有写入通用 CAS/请求键按 §4.3；所有列表均用 Page，未标分页的能力对象不是列表资源。
+每行恰为一个方法+路径；A001–A142 连续编号。HTTP 表共 **142 条**，不把 HEAD/OPTIONS 自动处理、静态资源、CLI 管道或未启用的旧路由别名算入条数。所有写入通用 CAS/请求键按 §4.3；所有列表均用 Page（A059扩展为ImagePage），未标分页的能力对象不是列表资源。
 
 错误列为额外领域错误；**每一行均继承**公共错误 B：400/401/403/404/413/422/429/500/503，写已有资源另继承 409/428，带会话句柄另继承 410。代码缩写 `conflict=state:conflict`、`unavailable=dependency:unavailable`、`unsupported=feature:unsupported`；不因列中省略 B 就允许绕过认证。来源“整合”表示本文补齐已有职责缺口，未改变架构。
 
@@ -282,12 +294,12 @@ version 是带资源身份及项目代次的服务端令牌：产品 revision、
 
 | ID | 方法 | 路径 | 请求 → 响应要点 | 领域错误 | 来源 / 阶段 |
 |---|---|---|---|---|---|
-| A059 | GET | P/images | ImageQuery/page →Page ImageView；每图完成后可刷新本列表 | — | 05§8.1、D / MVP |
-| A060 | GET | P/images/{image_id} | include=metadata? →ImageView/层状态 | — | D/E / MVP |
+| A059 | GET | P/images | ImageQuery + limit/cursor或around_id →ImagePage，含total及所在页索引，见§4.2 | 404 resource:not_found（定位目标不匹配） | 05§8.1、D、F14 C31 / MVP |
+| A060 | GET | P/images/{image_id} | include=metadata? →ImageView/层状态；含只读width/height/has_alpha（列表同） | — | D/E、F14 C30 / MVP |
 | A061 | PATCH | P/images/{image_id} | review_status或manual rating+If-Match →ImageView；四列rating服务生成 | 409 image:file_missing | D§5.4 / v1 |
-| A062 | POST | P/images/review | ids/target/expected_versions →整批新ImageView；任一失败回滚 | 409 image:file_missing、413 batch:too_large | D§6.5 / v1 |
-| A063 | GET | P/images/{image_id}/content | 无 →原始图片字节/ETag；Bearer | 410 image:file_missing | 05§3、整合 / MVP |
-| A064 | GET | P/images/{image_id}/thumbnail | size=256或512、默认256 →WebP/ETag | 410 image:file_missing、422 image:decode_failed | 05§3、整合 / MVP |
+| A062 | POST | P/images/review | ids或query范围请求+Idempotency-Key →ReviewResult；逐图旧状态/新version供撤销，query预览CAS及targets撤销见§4.3 | 409 image:file_missing、concurrency:version_conflict；410 preview:expired；413 batch:too_large | D§6.5、F14 C32 / v1 |
+| A063 | GET | P/images/{image_id}/content | If-None-Match? →200原始图片字节或304；均带ETag/Cache-Control，Bearer，见§7.1 | 410 image:file_missing | 05§3、F14 C34 / MVP |
+| A064 | GET | P/images/{image_id}/thumbnail | size=256或512、默认256，If-None-Match? →200 WebP或304；均带ETag/Cache-Control，见§7.1 | 410 image:file_missing、422 image:decode_failed | 05§3、F14 C34 / MVP |
 | A065 | POST | P/images/{image_id}/verify-file | If-Match →202 operation；核验真实恢复文件才解除missing | 409 image:hash_mismatch | D§5.4、整合 / v1 |
 | A066 | GET | P/annotations/{image_id} | 无 →AnnotationView，无导出阈值编辑视图/翻译/refs | — | E§5/13 / v1 |
 | A067 | GET | P/annotations/{image_id}/history | source/type/page →Page AnnotationRow，当前和历史标志 | — | D§6.4、整合 / v1 |
@@ -399,6 +411,15 @@ A125 未实现真实账号查询时返回 local_estimate 或 null：绝不把估
 | A139 | GET | U/tagger/installations/{installation_id} | 无 →OperationView/下载字节/校验状态 | 410 session:expired | V§9 / MVP |
 | A140 | DELETE | U/tagger/installations/{installation_id} | If-Match →204停止本次安装；不删除已被使用模型 | 409 tagger:in_use | V§9 / MVP |
 
+### 5.13 图片统计与范围审图预览（F14补充）
+
+| ID | 方法 | 路径 | 请求 → 响应要点 | 领域错误 | 来源 / 阶段 |
+|---|---|---|---|---|---|
+| A141 | GET | P/images/stats | §4.2图片过滤 + 重复group_by（默认review_status、rating；可选source_id、annotation_coverage）→ImageStats；无分页/排序，未知参数422 | — | F14 C33 / v1 |
+| A142 | POST | P/images/review/preview | `{query: ImageQuery}`+Idempotency-Key →200 ReviewPreview；冻结query成员和逐图Version供A062，不改图片 | 413 batch:too_large | F14 C32、§4.3 / v1 |
+
+上述接口归现有image_facade：`stats(ctx, query: ImageQuery, group_by: list[StatsGroup]) -> Awaitable[ImageStats]`、`preview_review(ctx, query: ImageQuery, key: UUID) -> Awaitable[ReviewPreview]`；A062为`review(ctx, input: ReviewRequest, key: UUID) -> Awaitable[ReviewResult]`，list返回改为ImagePage。依赖D读事务/单写队列、E覆盖投影及既有会话预览/幂等缓存；错误与重放见§4.3，最小测试T43–T47。A141只读可安全重试，单次快照内按每个group_by分别计数（非交叉分组），每图在每个维度只计一次，bucket省略零计数、null表示未赋值，各维度合计=total，空集groups仍含请求维度但buckets=[]；不受当前页或cursor影响。静态路径stats优先于`{image_id}`匹配。
+
 ## 6. SSE 事件合同
 
 ### 6.1 通道、信封与事件类型
@@ -453,7 +474,7 @@ A063/A064 仅按当前 project_id+image_id 查 D.ImageRow，实际文件为 `ima
 
 原图按真实格式返回 image/png、jpeg、webp 等，`X-Content-Type-Options:nosniff`、`Content-Disposition:inline`；拒绝SVG/HTML伪装，Pillow解码验证归入库/媒体检查。缩略图等比、EXIF归正、透明白底，size仅256/512，编码WebP，原图不改；缓存键包含sha256、尺寸、编码器版本。写临时文件原子替换，同键单航班；cache删掉仅重建。
 
-媒体采用 `Cache-Control:private,no-cache` 和强 ETag（原图sha256；缩略图sha256+变换版本摘要），认证/项目句柄检查先于 If-None-Match 304。Last-Modified 使用已登记资源时间，但ETag优先；不设public/immutable长时裸访问。MVP不实现Range，`Accept-Ranges:none`，Range请求忽略并返200完整图；HEAD若框架启用也须同样鉴权，只不发送body。
+媒体200/304均返回 `Cache-Control: private, max-age=0, must-revalidate`、`Vary: Authorization` 和强ETag：原图为带双引号的sha256，缩略图为原图sha256+size+变换/编码器版本的摘要；不使用审图version。允许私有缓存保存Bearer响应，每次复用须重验证；认证、项目句柄及文件存在/身份检查先于条件匹配，missing不能返回304。If-None-Match支持标签列表、弱比较及`*`，命中返回304无body，不命中200完整字节；304保留当前ETag/Cache-Control/Vary。Last-Modified使用已登记资源时间，但ETag优先；不设public/immutable长时裸访问。MVP不实现Range，`Accept-Ranges:none`，Range请求忽略并返200完整图；HEAD若框架启用也须同样鉴权，只不发送body。
 
 文件打开与读取期间持共享图级租约，reject清理拿独占租约；校验目标在可信根内、拒junction/reparse逃逸，打开后核对最终句柄路径和文件身份以缩小TOCTOU窗口。缩略图生成同样持租约，不凭字符串 startswith 判根。
 
@@ -569,6 +590,12 @@ Host严格匹配实际 `127.0.0.1:<port>`（开发代理也发送此Host），�
 | T40 | source run非交互遇费用ask退出7不submit；--detach仅附着可用；Ctrl+C语义与模式一致 |
 | T41 | 管道跨SID/远程客户端拒绝；不含token的定位文件被篡改不能绕过身份检查 |
 | T42 | doctor默认无外部调用/安装/迁移；JSON stdout纯结果、秘密输入不出现在参数/日志/诊断 |
+| T43 | A059/A060对不透明/透明图片返回准确width/height/has_alpha，missing保留元数据；写入这些只读字段422 |
+| T44 | A059过滤后total与同快照items一致；around_id在id/-id排序及页边界均定位正确，过滤外404、与cursor并用422；空集total=0，续页排除upper_id后的新增 |
+| T45 | A142→A062 query批量返回逐张旧状态与新version；同数量成员替换、版本改变、expected_total错均409且零写入；预览过期410、5001张413；targets撤销还原不同旧状态，并发改动整批拒绝 |
+| T46 | A062同键重放保留原旧状态且不再次展开query，异摘要409；撤销新键成功、重复撤销重放；重启旧预览失效，未知提交只核查；A142同键返回同预览 |
+| T47 | A141重复过滤OR/跨字段AND与A059一致；四维度分别计数、coverage三态及null桶、空集形状正确，合计均为total；分页/未知分组422，stats不误匹配image_id |
+| T48 | A063/A064首次200含ETag/Cache-Control/Vary；标签列表/弱标签/*命中304无body且头齐全，不命中200；缩略图尺寸/编码器改变ETag改变、仅审图不变；命中但无权限401/403、missing410 |
 
 ## 11. 跨文档冲突与统一方案
 
@@ -605,6 +632,8 @@ Host严格匹配实际 `127.0.0.1:<port>`（开发代理也发送此Host），�
 | C21 | 补齐浏览器路径授权及CLI附着通道 | 采用用途绑定PathGrant、原生picker、当前用户ACL管道；未裁决时仅CLI受控路径入口，不放开HTTP任意path |
 | C22 | 明确辅助任务/导出资源合同与清理两阶段协议 | 采用OperationView+各领域原状态机、preview/digest/confirm；不把辅助任务塞jobs，不暗删missing历史 |
 | C23 | 对齐安全基线、阶段标注和配置/恢复目录说明 | 固定loopback/Host/Origin/上传边界，APPDATA与LOCALAPPDATA分工；保留各模块未定能力，不扩大MVP模型/插件范围 |
+
+**C30–C34（来自 F14）已并入**：C30见§4.1 ImageView、A059/A060；C31见§4.2 ImagePage/around_id、A059；C32见§4.3及A062/A142（会话预览保存逐图CAS，仍限5000张）；C33见§4.2过滤及§5.13 A141；C34见A063/A064与§7.1缓存头；验收追加T43–T48。待确认：超过5000张的单事务全选需要另议容量边界，本次不扩大既定批量上限。
 
 ## 13. 待确认 Q01–Q08（本文局部编号）
 
