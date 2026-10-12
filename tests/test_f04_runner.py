@@ -3,6 +3,7 @@ from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 from f02_support import *
 from stylelora.project_db import create_project, close_project, submit_write, read_snapshot
 from stylelora.project_db import commands
@@ -16,6 +17,46 @@ from stylelora.backends.types import plain
 
 
 class RunnerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_recovery_gate_blocks_resume_before_settings_lease(self):
+        from stylelora.generation.recovery import recover_source
+        backend = LocalBackend(BackendError('mcp:write_outcome_unknown', 'submit', 'unknown'))
+        runner, seeds = await self.make_runner(backend=backend)
+        await runner.start(seeds)
+        await runner.wait()
+        entered, release = asyncio.Event(), asyncio.Event()
+        from stylelora.project_db.types import RecoveryEvidence
+        async def slow_probe(project, item, backend):
+            entered.set()
+            await release.wait()
+            return RecoveryEvidence(item.item_id, item.attempts, 'unknown')
+        with patch('stylelora.generation.recovery.probe', side_effect=slow_probe), \
+                patch.object(backend, 'apply_profile', wraps=backend.apply_profile) as apply:
+            recovery = asyncio.create_task(recover_source(self.project, runner.source_id, backend))
+            await entered.wait()
+            resume = asyncio.create_task(runner.resume())
+            await asyncio.sleep(0)
+            self.assertFalse(resume.done())
+            self.assertEqual(apply.call_count, 0)
+            release.set()
+            self.assertTrue(await recovery)
+            with self.assertRaises(BackendError):
+                await resume
+            self.assertEqual(apply.call_count, 0)
+            self.assertEqual(backend.submits, 1)
+
+    async def test_recovery_rejects_active_runner(self):
+        from stylelora.generation.recovery import recover_source
+        fake = FakeLauncher()
+        fake.submit_release = asyncio.Event()
+        runner, seeds = await self.make_runner(fake)
+        await runner.start(seeds)
+        await fake.submit_entered.wait()
+        with self.assertRaises(BackendError):
+            await recover_source(self.project, runner.source_id)
+        fake.submit_release.set()
+        await runner.wait()
+        self.assertEqual(fake.counts['submit_generation'], 1)
+
     async def asyncSetUp(self):
         self.temp = TemporaryDirectory()
         self.root = Path(self.temp.name)

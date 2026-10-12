@@ -1,10 +1,27 @@
 import unittest
+import asyncio
+import json
+import multiprocessing
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from f02_support import *
 from stylelora.generation.profile import *
+
+
+def competing_process(journal, leases, output):
+    async def attempt():
+        fake = FakeLauncher()
+        fake.lease_directory = Path(leases)
+        backend = await fake.backend(Path(journal))
+        try:
+            await backend.apply_profile(PROFILE)
+            output.put('acquired')
+            await backend.close()
+        except BackendError as exc:
+            output.put(exc.code)
+    asyncio.run(attempt())
 
 
 class ProfileTests(unittest.TestCase):
@@ -45,6 +62,109 @@ class ProfileTests(unittest.TestCase):
 
 
 class LeaseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_independent_journal_writers_concurrent_apply(self):
+        with TemporaryDirectory() as directory:
+            fake = FakeLauncher()
+            first = await fake.backend(Path(directory) / 'one')
+            second = await fake.backend(Path(directory) / 'two')
+            for _ in range(3):
+                results = await asyncio.gather(first.apply_profile(PROFILE), second.apply_profile(PROFILE),
+                                               return_exceptions=True)
+                self.assertIsInstance(results[0], ProfileHandle)
+                self.assertIsInstance(results[1], BackendError)
+                self.assertEqual(results[1].code, 'profile:restore_pending')
+                self.assertFalse(second.journal.exists())
+                await first.restore(results[0])
+            await first.close()
+            await second.close()
+
+    async def test_cross_process_lease_blocks_independent_writer(self):
+        with TemporaryDirectory() as directory:
+            fake = FakeLauncher()
+            backend = await fake.backend(Path(directory) / 'one')
+            await backend.apply_profile(PROFILE)
+            context = multiprocessing.get_context('spawn')
+            output = context.Queue()
+            process = context.Process(target=competing_process,
+                args=(str(Path(directory) / 'two'), str(fake.lease_directory), output))
+            process.start()
+            await asyncio.to_thread(process.join, 20)
+            try:
+                self.assertFalse(process.is_alive())
+                self.assertEqual(process.exitcode, 0)
+                self.assertEqual(output.get(timeout=2), 'profile:restore_pending')
+            finally:
+                if process.is_alive():
+                    process.terminate()
+                    process.join()
+                output.close()
+                await backend.close()
+
+    async def test_journal_digest_fields_and_writable_keys_fail_closed(self):
+        with TemporaryDirectory() as directory:
+            fake = FakeLauncher()
+            backend = await fake.backend(Path(directory))
+            handle = await backend.apply_profile(PROFILE)
+            original = json.loads(backend.journal.read_text())
+            for kind in ('digest', 'extra', 'readonly', 'value'):
+                data = json.loads(json.dumps(original))
+                if kind == 'digest':
+                    data['original']['steps'] = 999
+                elif kind == 'extra':
+                    data['token'] = 'not-allowed'
+                elif kind == 'readonly':
+                    data['original']['prompt'] = 'injected'
+                    data['applied']['prompt'] = 'page prompt'
+                    data['writable_keys'].append('prompt')
+                else:
+                    data['original']['steps'] = {'nested': 'invalid'}
+                if kind != 'digest':
+                    data.pop('digest')
+                    data['digest'] = digest(data)
+                backend.journal.write_text(json.dumps(data))
+                writes = fake.counts['update_generation_settings']
+                with self.assertRaises(BackendError) as caught:
+                    await backend.recover_settings()
+                self.assertEqual(caught.exception.code, 'profile:restore_conflict')
+                self.assertTrue(backend.session.unknown_write)
+                self.assertTrue(backend.lease_path.exists())
+                self.assertEqual(fake.counts['update_generation_settings'], writes)
+            backend.journal.write_text(json.dumps(original))
+            await backend.restore(handle)
+
+    async def test_owner_and_lease_id_checked_before_restore(self):
+        with TemporaryDirectory() as directory:
+            fake = FakeLauncher()
+            backend = await fake.backend(Path(directory))
+            handle = await backend.apply_profile(PROFILE)
+            original = backend.lease_path.read_text()
+            for key in ('owner', 'lease_id'):
+                lease = json.loads(original)
+                lease[key] = 'another-owner'
+                backend.lease_path.write_text(json.dumps(lease))
+                with self.assertRaises(BackendError):
+                    await backend.restore(handle)
+                self.assertEqual(fake.settings['steps'], 14)
+                self.assertTrue(backend.journal.exists())
+            backend.lease_path.write_text(original)
+            await backend.close()
+
+    async def test_generation_actual_whitelist_and_size_bounds(self):
+        with TemporaryDirectory() as directory:
+            fake = FakeLauncher()
+            fake.submit_payload = {'token': 'secret', 'nested': {'payload': 'x' * 10000},
+                'seed': 42, 'steps': {'bad': 'value'}, 'sampler': 'x' * 129,
+                'scale': 5, 'width': 64, 'height': 64}
+            backend = await fake.backend(Path(directory))
+            await backend.apply_profile(PROFILE)
+            request = GenerationRequest(item_id=1, attempt=1, positive='style', negative='', width=64, height=64,
+                                        save_path=Path(directory) / 'out.png')
+            result = await backend.submit(await backend.prepare(request))
+            self.assertEqual(plain(result.actual), {'seed': 42, 'scale': 5, 'width': 64, 'height': 64})
+            self.assertEqual(result.resource_id, 'fake-resource')
+            self.assertLess(len(json.dumps(plain(result.actual))), 1024)
+            await backend.close()
+
     async def test_T08_prepare_drift_medium_conflict_and_fixed(self):
         with TemporaryDirectory() as directory:
             fake = FakeLauncher(prepare_drift={'steps': 28})
@@ -106,9 +226,11 @@ class LeaseTests(unittest.IsolatedAsyncioTestCase):
             await second.apply_profile(PROFILE)
             await second.close()
             await backend.apply_profile(PROFILE)
-            # Simulate process exit by releasing only the process-local lease registry.
-            from stylelora.backends.nai_launcher.adapter import _leases
-            _leases.clear()
+            # Process exit: recovery may reclaim an expired durable lease only.
+            import json
+            lease = json.loads(backend.lease_path.read_text())
+            lease['expires_at'] = 0
+            backend.lease_path.write_text(json.dumps(lease))
             replacement = await fake.backend(Path(directory) / 'one')
             with self.assertRaises(BackendError):
                 await replacement.apply_profile(PROFILE)

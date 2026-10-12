@@ -34,6 +34,10 @@ class AttemptReceipt(Immutable):
     metadata_stripped: bool | None = None
     validation_codes: tuple[str, ...] = ()
     schema_version: int = 1
+    cycle_id: str | None = None
+    run_token: str | None = None
+    backend_instance: str | None = None
+    saved_path: str | None = None
 
 
 def request_digest(request, root):
@@ -58,6 +62,8 @@ def write_receipt(root, receipt):
     if path.exists():
         old = read_attempt(root, receipt.item_id, receipt.attempt)
         identity = ('source_id', 'item_id', 'attempt', 'request_digest', 'config_digest', 'relative_staging_path')
+        if old.phase != 'intent':
+            identity += ('cycle_id', 'run_token', 'backend_instance', 'resource_id')
         if any(getattr(old, k) != getattr(receipt, k) for k in identity) or (old.complete and old != receipt):
             raise BackendError('artifact:ownership_conflict', 'receipt')
     atomic_json(path, value)
@@ -75,6 +81,10 @@ def read_attempt(root, item_id, attempt):
             raise ValueError()
         if receipt.relative_staging_path != f'images/.pending/{item_id}/{attempt}/out.png':
             raise ValueError()
+        if receipt.phase not in ('intent', 'submitted', 'complete') or receipt.complete != (receipt.phase == 'complete'):
+            raise ValueError()
+        if receipt.saved_path not in (None, receipt.relative_staging_path):
+            raise ValueError()
         relative_path(root, receipt.relative_staging_path)
         return receipt
     except (OSError, ValueError, TypeError, KeyError):
@@ -83,6 +93,15 @@ def read_attempt(root, item_id, attempt):
 
 def inspection_summary(inspection):
     return {'schema_version': 1, 'validation': inspection.validation, 'reason_codes': list(inspection.reason_codes)}
+
+
+def save_validation(root, receipt, inspection):
+    path = relative_path(root, f'images/.pending/{receipt.item_id}/{receipt.attempt}/validation.json')
+    atomic_json(path, {**inspection_summary(inspection), 'sha256': inspection.sha256,
+        'source_id': receipt.source_id, 'item_id': receipt.item_id, 'attempt': receipt.attempt,
+        'resource_id': receipt.resource_id, 'saved_path': receipt.relative_staging_path,
+        'cycle_id': receipt.cycle_id, 'run_token': receipt.run_token,
+        'backend_instance': receipt.backend_instance})
 
 
 def originals_for(prompt, inspection, catalog=None):
@@ -118,13 +137,27 @@ def stage_result(root, request, result):
     return expected
 
 
+def record_submission(root, request, result):
+    """Persist remote identity before export, decoding, or publication can fail."""
+    receipt = read_attempt(root, request.item_id, request.attempt)
+    if result.saved_path is not None and result.saved_path.resolve() != request.save_path.resolve():
+        raise BackendError('artifact:ownership_conflict', 'artifact', 'unknown')
+    if receipt.resource_id is not None and receipt.resource_id != result.resource_id:
+        raise BackendError('artifact:ownership_conflict', 'artifact', 'unknown')
+    if receipt.phase == 'intent':
+        receipt = replace(receipt, phase='submitted', resource_id=result.resource_id,
+            saved_path=receipt.relative_staging_path if result.saved_path is not None else None,
+            metadata_stripped=result.metadata_stripped)
+        write_receipt(root, receipt)
+    return receipt
+
+
 async def register_artifact(project, inspection, receipt, originals):
     if not receipt.complete or (receipt.sha256, receipt.width, receipt.height, receipt.file_size) != (inspection.sha256, inspection.width, inspection.height, inspection.file_size):
         raise BackendError('artifact:ownership_conflict', 'artifact')
     summary = inspection_summary(inspection)
     # Durable independent check record is also used when there are no originals.
-    check_path = relative_path(project.root, f'images/.pending/{receipt.item_id}/{receipt.attempt}/validation.json')
-    atomic_json(check_path, {**summary, 'sha256': inspection.sha256})
+    save_validation(project.root, receipt, inspection)
     artifact = ImageArtifact(receipt.item_id, receipt.attempt, receipt.relative_staging_path,
         '.png', inspection.width, inspection.height, inspection.phash, inspection.sha256,
         inspection.file_size, plain(inspection.png_meta), '', summary)
@@ -138,7 +171,7 @@ async def register_artifact(project, inspection, receipt, originals):
 
 
 async def accept_result(project, source, item, request, result, *, catalog=None):
-    receipt = read_attempt(project.root, item.item_id, request.attempt)
+    receipt = record_submission(project.root, request, result)
     path = stage_result(project.root, request, result)
     inspection = inspect_png(path, style_prompt=source.style_prompt, sent_prompt=request.positive,
         metadata_stripped=result.metadata_stripped, expected_size=(request.width, request.height), catalog=catalog)

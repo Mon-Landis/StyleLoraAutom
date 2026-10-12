@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from PIL import Image
 from stylelora.backends.types import Immutable, BackendError
@@ -75,7 +76,10 @@ def inspect_png(path, *, style_prompt, sent_prompt, metadata_stripped=None, expe
     from stylelora.vision.phash import compute_phash
     try:
         phash = compute_phash(path)
-    except (OSError, ValueError):
+        if not isinstance(phash, str) or not re.fullmatch(r'[0-9a-f]{16}', phash):
+            raise ValueError()
+    except Exception:
         phash = None
         reasons.append('phash_unavailable')
+        validation = 'unverifiable'
     return ArtifactInspection(width, height, size, sha, phash, meta, validation, tuple(reasons))

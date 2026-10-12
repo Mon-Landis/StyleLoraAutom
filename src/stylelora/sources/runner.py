@@ -11,7 +11,7 @@ from stylelora.project_db.recovery import reconcile_item
 from stylelora.generation.profile import from_snapshot, validate_profile
 from stylelora.generation.profile import build_request
 from stylelora.generation.artifacts import AttemptReceipt, write_receipt, request_digest, accept_result
-from stylelora.generation.recovery import probe, prepare_reconciliation
+from stylelora.generation.recovery import probe, prepare_reconciliation, source_gate, recover_locked
 from .cost import CostCoordinator, all_items
 from .events import EventBus, ProgressEvent
 
@@ -27,7 +27,7 @@ class SourceRunner:
         _controllers[key] = self
         self.project, self.source_id, self.backend_factory = project, source_id, backend_factory
         self.events, self.catalog = events or EventBus(), catalog
-        self.control = asyncio.Lock()
+        self.control = source_gate(project, source_id)
         self.task = None
         self.cycle_id = None
         self.sequence = 0
@@ -63,6 +63,8 @@ class SourceRunner:
                 await self._transition('paused', 'discovery:not_running')
             raise
         try:
+            if await recover_locked(self.project, self.source_id, backend):
+                raise BackendError('profile:restore_pending', 'preflight')
             config = from_snapshot(self.source().config_json)
             caps = await backend.capabilities()
             validate_profile(config.profile, caps)
@@ -161,12 +163,16 @@ class SourceRunner:
             return (await self.write(lambda db: commands.retry_failed_item(db, item_id, expected_attempt=expected_attempt))).value
 
     def _running(self, cycle):
-        return self.source().status == 'running' and self.cycle_id == cycle
+        current = self.project.writer.cycles.get(self.source_id)
+        return self.source().status == 'running' and self.cycle_id == cycle and current is not None and current[0] == cycle
 
     async def run_cycle(self, cycle_id, backend, config, caps):
         handle, preparation, sent_item = None, None, None
         try:
-            handle = await backend.apply_profile(config.profile)
+            async with self.control:
+                if not self._running(cycle_id) or all_items(self.project, self.source_id, ('sent',)):
+                    raise BackendError('profile:restore_pending', 'preflight')
+                handle = await backend.apply_profile(config.profile)
             for item in all_items(self.project, self.source_id, ('pending',)):
                 if not self._running(cycle_id):
                     break
@@ -186,7 +192,9 @@ class SourceRunner:
                     continue
                 receipt = AttemptReceipt(source.source_id, item.item_id, request.attempt,
                     request_digest(request, self.project.root), digest(source.config_json),
-                    request.save_path.relative_to(self.project.root).as_posix())
+                    request.save_path.relative_to(self.project.root).as_posix(),
+                    cycle_id=cycle_id, run_token=cycle_id,
+                    backend_instance=getattr(backend, 'instance', backend.__class__.__name__))
                 write_receipt(self.project.root, receipt)
                 preparation = await backend.prepare(request)
                 if self.last_submit is not None:

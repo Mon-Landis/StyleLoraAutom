@@ -53,6 +53,9 @@ class FakeLauncher:
         self.comment_prompt = None
         self.submit_elapsed = 0
         self.virtual_time = 0
+        self.lease_directory = None
+        self.submit_payload = {}
+        self.resource_bytes = {}
 
     @property
     def info(self):
@@ -128,6 +131,7 @@ class FakeLauncher:
                     path = Path(prepared['save_path'])
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_bytes(png_bytes(self.comment_prompt or prepared['prompt'], (prepared['width'], prepared['height'])))
+                    self.resource_bytes['fake-resource'] = path.read_bytes()
                     if self.submit_fault == 'timeout':
                         raise TimeoutError('DO-NOT-LOG-SECRET')
                     if self.submit_fault in (404, 502):
@@ -135,6 +139,13 @@ class FakeLauncher:
                     if self.submit_fault == 'eof':
                         return HttpReply(200, {'Content-Type': 'text/event-stream'}, b': heartbeat\n\n')
                     payload = {'saved_path': str(path), 'resource_ref': {'resourceId': 'fake-resource'}, 'metadata_stripped': False}
+                    payload.update(self.submit_payload)
+                elif name == 'save_generated_image':
+                    path = Path(args['save_path'])
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    with path.open('xb') as stream:
+                        stream.write(self.resource_bytes[args['resource_id']])
+                    payload = {'saved_path': str(path)}
                 elif name == 'get_generation_status':
                     payload = {'status': 'idle'}
                 elif name == 'get_recent_images':
@@ -163,8 +174,11 @@ class FakeLauncher:
         return HttpReply(200, output_headers, encoded)
 
     async def backend(self, journal_dir):
+        if self.lease_directory is None:
+            self.lease_directory = Path(journal_dir) / 'product-leases'
         session = await connect(self.info, transport=self, sleep=no_sleep, random_value=lambda: 0)
-        return LauncherBackend(session, CAPS, journal_dir=journal_dir, manifest=MANIFEST)
+        return LauncherBackend(session, CAPS, journal_dir=journal_dir, manifest=MANIFEST,
+                               lease_dir=self.lease_directory)
 
 
 async def no_sleep(delay):

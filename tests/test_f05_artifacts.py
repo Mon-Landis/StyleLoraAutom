@@ -17,6 +17,20 @@ from stylelora.generation.recovery import probe
 
 
 class MetadataTests(unittest.TestCase):
+    def test_phash_failure_overrides_prompt_pass_and_mismatch(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / 'out.png'
+            for prompt in ('style, content', 'content'):
+                path.write_bytes(png_bytes(prompt))
+                for failure in (OSError(), RuntimeError()):
+                    with patch('stylelora.vision.phash.compute_phash', side_effect=failure):
+                        result = inspect_png(path, style_prompt='style', sent_prompt='style, content')
+                    self.assertEqual(result.validation, 'unverifiable')
+                    self.assertIn('phash_unavailable', result.reason_codes)
+                    self.assertIsNone(result.phash)
+                with patch('stylelora.vision.phash.compute_phash', return_value='invalid'):
+                    self.assertEqual(inspect_png(path, style_prompt='style', sent_prompt=prompt).validation, 'unverifiable')
+
     def test_T15_full_decode_size_hash_and_tag_comparison(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / 'out.png'
@@ -55,6 +69,154 @@ class MetadataTests(unittest.TestCase):
 
 
 class ArtifactTests(unittest.IsolatedAsyncioTestCase):
+    async def test_recovery_rejects_stale_cycle_and_run_token(self):
+        from stylelora.generation.recovery import recover_source
+        from stylelora.project_db.types import RecoveryEvidence
+        await self.sent()
+        cycle = self.project.writer.cycles[self.source.source_id]
+        marker = self.root / f'images/.pending/recovery-{self.source.source_id}.json'
+        for kind in ('cycle', 'run_token'):
+            self.project.writer.cycles[self.source.source_id] = cycle
+            async def stale(*args):
+                if kind == 'cycle':
+                    self.project.writer.cycles[self.source.source_id] = ('stale', False)
+                else:
+                    data = json.loads(marker.read_text())
+                    data['run_token'] = 'stale'
+                    data.pop('digest')
+                    data['digest'] = digest(data)
+                    marker.write_text(json.dumps(data))
+                return RecoveryEvidence(self.item.item_id, 1, 'unknown')
+            with patch('stylelora.generation.recovery.probe', side_effect=stale), self.assertRaises(BackendError):
+                await recover_source(self.project, self.source.source_id)
+            self.assertTrue(marker.exists())
+
+    async def test_recovery_rejects_wrong_backend_instance(self):
+        await self.sent()
+        self.request.save_path.write_bytes(png_bytes())
+        write_receipt(self.root, replace(self.intent, phase='submitted', resource_id='resource',
+                                        backend_instance='different-instance'))
+        backend = LocalBackend()
+        with patch.object(backend, 'reconcile', wraps=backend.reconcile) as reconcile:
+            self.assertEqual((await probe(self.project, self.item, backend)).verdict, 'unknown')
+            self.assertEqual(reconcile.call_count, 0)
+        self.assertEqual(backend.submits, 0)
+
+    async def test_recovery_crash_after_rename_recovers_again(self):
+        fake = FakeLauncher()
+        backend = await fake.backend(Path(self.temp.name) / 'journal')
+        await backend.apply_profile(PROFILE)
+        write_receipt(self.root, replace(self.intent, backend_instance=backend.instance))
+        await self.sent()
+        await backend.submit(await backend.prepare(self.request))
+        from stylelora.generation.recovery import recover_source
+        with patch('stylelora.project_db.repositories.annotations.append_version', side_effect=RuntimeError('crash')):
+            with self.assertRaises(RuntimeError):
+                await recover_source(self.project, self.source.source_id, backend)
+        self.assertFalse(self.request.save_path.exists())
+        self.assertTrue(read_attempt(self.root, self.item.item_id, 1).complete)
+        self.assertEqual(await recover_source(self.project, self.source.source_id, backend), ())
+        self.assertEqual(await recover_source(self.project, self.source.source_id, backend), ())
+        self.assertEqual(fake.counts['submit_generation'], 1)
+        with read_snapshot(self.project) as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM images').fetchone()[0], 1)
+        await backend.close()
+
+    async def test_crash_before_submitted_write_remains_unknown_never_resubmits(self):
+        fake = FakeLauncher()
+        backend = await fake.backend(Path(self.temp.name) / 'journal')
+        await backend.apply_profile(PROFILE)
+        await self.sent()
+        preparation = await backend.prepare(self.request)
+        with patch('stylelora.generation.artifacts.write_receipt', side_effect=OSError('disk full')):
+            with self.assertRaises(BackendError):
+                await backend.submit(preparation)
+        from stylelora.generation.recovery import recover_source
+        for _ in range(2):
+            self.assertEqual(await recover_source(self.project, self.source.source_id, backend), (self.item.item_id,))
+        self.assertEqual(read_attempt(self.root, self.item.item_id, 1).phase, 'intent')
+        self.assertEqual(fake.counts['submit_generation'], 1)
+        backend.inflight = False
+        await backend.close()
+
+    async def crash_window(self, target, *, after=False):
+        import importlib
+        fake = FakeLauncher()
+        backend = await fake.backend(Path(self.temp.name) / 'journal')
+        await backend.apply_profile(PROFILE)
+        self.intent = replace(self.intent, backend_instance=backend.instance, cycle_id='cycle', run_token='run')
+        write_receipt(self.root, self.intent)
+        await self.sent()
+        preparation = await backend.prepare(self.request)
+        module_name, name = target.rsplit('.', 1)
+        original = getattr(importlib.import_module(module_name), name)
+        def crash(*args, **kwargs):
+            if after:
+                original(*args, **kwargs)
+            raise RuntimeError('injected crash')
+        try:
+            if name == 'record_submission':
+                with patch(target, side_effect=crash), self.assertRaises(BackendError):
+                    await backend.submit(preparation)
+            else:
+                result = await backend.submit(preparation)
+                with patch(target, side_effect=crash), self.assertRaises(RuntimeError):
+                    await accept_result(self.project, self.source, self.item, self.request, result)
+            receipt = read_attempt(self.root, self.item.item_id, 1)
+            self.assertEqual(receipt.resource_id, 'fake-resource')
+            self.assertEqual((receipt.attempt, receipt.cycle_id, receipt.run_token), (1, 'cycle', 'run'))
+            self.assertEqual(receipt.saved_path, self.intent.relative_staging_path)
+            from stylelora.generation.recovery import recover_source
+            self.assertEqual(await recover_source(self.project, self.source.source_id, backend), ())
+            self.assertEqual(await recover_source(self.project, self.source.source_id, backend), ())
+            self.assertEqual(fake.counts['submit_generation'], 1)
+            validation = json.loads((self.request.save_path.parent / 'validation.json').read_text())
+            self.assertEqual((validation['resource_id'], validation['source_id'], validation['attempt']),
+                             ('fake-resource', self.source.source_id, 1))
+            with read_snapshot(self.project) as db:
+                self.assertEqual(sources.get_item(db, self.item.item_id).status, 'done')
+                self.assertEqual(db.execute('SELECT count(*) FROM images').fetchone()[0], 1)
+                self.assertEqual(db.execute('SELECT count(*) FROM annotations').fetchone()[0], 1)
+        finally:
+            backend.inflight = False
+            await backend.close()
+
+    async def test_crash_after_submitted_receipt(self):
+        await self.crash_window('stylelora.generation.artifacts.record_submission', after=True)
+
+    async def test_crash_before_complete_receipt(self):
+        await self.crash_window('stylelora.generation.artifacts.write_receipt')
+
+    async def test_crash_after_complete_receipt(self):
+        await self.crash_window('stylelora.generation.artifacts.write_receipt', after=True)
+
+    async def test_crash_before_validation_receipt(self):
+        await self.crash_window('stylelora.generation.artifacts.save_validation')
+
+    async def test_crash_after_validation_receipt(self):
+        await self.crash_window('stylelora.generation.artifacts.save_validation', after=True)
+
+    async def test_crash_before_publication_receipt(self):
+        await self.crash_window('stylelora.project_db.receipts.prepare_receipt')
+
+    async def test_crash_after_publication_receipt(self):
+        await self.crash_window('stylelora.project_db.receipts.prepare_receipt', after=True)
+
+    async def test_submitted_missing_file_exports_bound_resource_only(self):
+        fake = FakeLauncher()
+        backend = await fake.backend(Path(self.temp.name) / 'journal')
+        await backend.apply_profile(PROFILE)
+        write_receipt(self.root, replace(self.intent, backend_instance=backend.instance))
+        await self.sent()
+        await backend.submit(await backend.prepare(self.request))
+        self.request.save_path.unlink()
+        from stylelora.generation.recovery import recover_source
+        self.assertEqual(await recover_source(self.project, self.source.source_id, backend), ())
+        self.assertEqual(await recover_source(self.project, self.source.source_id, backend), ())
+        self.assertEqual(fake.counts['submit_generation'], 1)
+        self.assertEqual(fake.counts['save_generated_image'], 1)
+        await backend.close()
+
     async def asyncSetUp(self):
         self.temp = TemporaryDirectory()
         self.root = Path(self.temp.name) / 'project.slproj'

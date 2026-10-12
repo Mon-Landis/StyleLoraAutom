@@ -1,7 +1,9 @@
 """Launcher settings lease and tool mapping. Unverified remote evidence stays unknown."""
 import os
 import json
-import threading
+import time
+import math
+from dataclasses import fields
 from pathlib import Path
 from uuid import uuid4
 from ..types import (BackendError, ProfileHandle, Preparation, GenerationResult, digest, plain)
@@ -12,13 +14,9 @@ from stylelora.generation.profile import validate_profile, profile_values, valid
 from stylelora.project_db.migrations import atomic_json
 from stylelora.project_db.types import RecoveryEvidence
 
-_leases = {}
-_guard = threading.Lock()
-
-
 class LauncherBackend:
     def __init__(self, session, capabilities, *, journal_dir=None, manifest=TRUSTED_MANIFEST,
-                 account_provider=None, evidence_decoder=None):
+                 account_provider=None, evidence_decoder=None, lease_dir=None):
         report = verify_compatibility(session.server, session.tools, app_version=session.info.app_version,
                                       protocol_version=session.protocol_version, manifest=manifest)
         if not report.accepted:
@@ -36,6 +34,12 @@ class LauncherBackend:
                 raise BackendError('profile:restore_pending', 'journal')
             journal_dir = Path(base) / 'StyleLoraAutom/recovery/launcher'
         self.journal = Path(journal_dir) / 'launcher.json'
+        if lease_dir is None and not os.environ.get('LOCALAPPDATA'):
+            raise BackendError('profile:restore_pending', 'lease')
+        base = lease_dir or Path(os.environ['LOCALAPPDATA']) / 'StyleLoraAutom/recovery/launcher/leases'
+        self.lease_path = Path(base) / (self.instance + '.json')
+        self.owner = uuid4().hex
+        self.lease_id = None
         self.handle = None
         self.preparations = {}
         self.inflight = False
@@ -62,8 +66,12 @@ class LauncherBackend:
 
     async def _call(self, name, arguments=None, kind='read'):
         self._check_connection_identity()
+        if self.lease_id is not None:
+            self._check_lease()
         result = await self.session.call(name, arguments or {}, kind=kind)
         self._check_connection_identity()
+        if self.lease_id is not None:
+            self._check_lease()
         return plain(result.payload)
 
     def _check_connection_identity(self):
@@ -83,8 +91,49 @@ class LauncherBackend:
         return values
 
     def _save_handle(self, handle):
+        self._check_lease()
         self.journal.parent.mkdir(parents=True, exist_ok=True)
-        atomic_json(self.journal, {'schema_version': 1, **plain(handle)})
+        data = {'schema_version': 1, 'owner': self.owner, **plain(handle)}
+        atomic_json(self.journal, {**data, 'digest': digest(data)})
+
+    def _read_lease(self):
+        try:
+            data = json.loads(self.lease_path.read_text(encoding='utf-8'))
+            if set(data) != {'owner', 'lease_id', 'expires_at', 'backend_instance', 'journal'}:
+                raise ValueError()
+            if data['backend_instance'] != self.instance:
+                raise ValueError()
+            if (not all(isinstance(data[k], str) and data[k] for k in ('owner', 'lease_id', 'journal'))
+                    or type(data['expires_at']) not in (int, float) or not math.isfinite(data['expires_at'])):
+                raise ValueError()
+            return data
+        except (OSError, ValueError, TypeError):
+            raise BackendError('profile:restore_conflict', 'lease') from None
+
+    def _check_lease(self):
+        data = self._read_lease()
+        if (data['owner'], data['lease_id']) != (self.owner, self.lease_id) or data['expires_at'] <= time.time():
+            raise BackendError('profile:restore_conflict', 'lease')
+
+    def _acquire_lease(self):
+        self.lease_path.parent.mkdir(parents=True, exist_ok=True)
+        identity = uuid4().hex
+        data = {'owner': self.owner, 'lease_id': identity, 'expires_at': time.time() + 86400,
+                'backend_instance': self.instance, 'journal': str(self.journal.resolve())}
+        try:
+            fd = os.open(self.lease_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            raise BackendError('profile:restore_pending', 'apply') from None
+        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+            json.dump(data, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        self.lease_id = identity
+
+    def _release_lease(self):
+        self._check_lease()
+        self.lease_path.unlink()
+        self.lease_id = None
 
     async def recover_settings(self):
         """Explicit read-first recovery; never adopts another Launcher identity."""
@@ -92,18 +141,44 @@ class LauncherBackend:
             return
         try:
             data = json.loads(self.journal.read_text(encoding='utf-8'))
+            fingerprint = data.pop('digest')
+            if digest(data) != fingerprint or set(data) != {'schema_version', 'owner'} | {f.name for f in fields(ProfileHandle)}:
+                raise ValueError()
             if data.pop('schema_version') != 1:
                 raise ValueError()
+            owner = data.pop('owner')
             handle = ProfileHandle(**data)
-            if handle.backend_instance != self.instance:
+            if (handle.backend_instance != self.instance or not isinstance(owner, str) or not owner
+                    or not isinstance(handle.lease_id, str) or not handle.lease_id):
                 raise ValueError()
-        except (OSError, ValueError, TypeError, KeyError):
+            specs = {s.key: s for s in self._caps.parameters if not s.read_only and s.key not in self._caps.per_request_parameters}
+            keys = set(handle.writable_keys)
+            if len(keys) != len(handle.writable_keys) or keys != set(handle.original) or keys != set(handle.applied) or not keys <= set(specs):
+                raise ValueError()
+            for key in keys:
+                validate_value(handle.original[key], specs[key].value_schema)
+                validate_value(handle.applied[key], specs[key].value_schema)
+        except (OSError, ValueError, TypeError, KeyError, BackendError):
+            self.session.unknown_write = True
             raise BackendError('profile:restore_conflict', 'restore') from None
-        with _guard:
-            owner = _leases.get(self.lease_key)
-            if owner is not None and owner is not self:
+        lock = self.lease_path.with_suffix('.recover')
+        try:
+            fd = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            raise BackendError('profile:restore_pending', 'restore') from None
+        try:
+            os.close(fd)
+            lease = self._read_lease()
+            if (lease['owner'], lease['lease_id'], lease['journal']) != (owner, handle.lease_id, str(self.journal.resolve())):
+                raise BackendError('profile:restore_conflict', 'restore')
+            if lease['owner'] != self.owner and lease['expires_at'] > time.time():
                 raise BackendError('profile:restore_pending', 'restore')
-            _leases[self.lease_key] = self
+            lease.update(owner=self.owner, expires_at=time.time() + 86400)
+            atomic_json(self.lease_path, lease)
+            self.lease_id = handle.lease_id
+            self._save_handle(handle)
+        finally:
+            lock.unlink(missing_ok=True)
         self.handle = handle
         await self.restore(handle)
 
@@ -111,10 +186,7 @@ class LauncherBackend:
         validate_profile(profile, self._caps)
         if self.handle is not None or self.journal.exists():
             raise BackendError('profile:restore_pending', 'apply')
-        with _guard:
-            if self.lease_key in _leases:
-                raise BackendError('profile:restore_pending', 'apply')
-            _leases[self.lease_key] = self
+        self._acquire_lease()
         try:
             current = await self._settings()
             applied = profile_values(profile)
@@ -122,7 +194,7 @@ class LauncherBackend:
                 raise BackendError('profile:drift', 'apply')
             # Only keys actually changed are restored; read-only/one-shot fields never enter the log.
             changed = {k: v for k, v in applied.items() if current[k] != v}
-            handle = ProfileHandle(uuid4().hex, {k: current[k] for k in changed}, changed,
+            handle = ProfileHandle(self.lease_id, {k: current[k] for k in changed}, changed,
                                    tuple(changed), self.instance)
             self._save_handle(handle)
             self.handle = handle
@@ -134,12 +206,12 @@ class LauncherBackend:
                 raise BackendError('profile:drift', 'apply')
             return handle
         except BaseException:
-            if self.handle is None:
-                with _guard:
-                    _leases.pop(self.lease_key, None)
+            if self.handle is None and not self.journal.exists():
+                self._release_lease()
             raise
 
     async def restore(self, handle):
+        self._check_lease()
         if self.handle != handle or handle.backend_instance != self.instance:
             raise BackendError('profile:restore_conflict', 'restore')
         if self.inflight or self.preparations:
@@ -166,10 +238,10 @@ class LauncherBackend:
         current = await self._settings()
         if any(current.get(k) != v for k, v in handle.original.items()):
             raise BackendError('profile:restore_conflict', 'restore')
+        self._check_lease()
         self.journal.unlink(missing_ok=True)
         self.handle = None
-        with _guard:
-            _leases.pop(self.lease_key, None)
+        self._release_lease()
 
     async def prepare(self, request):
         if self.handle is None or self.inflight or self.preparations:
@@ -224,6 +296,22 @@ class LauncherBackend:
             result = await self._call('submit_generation', {'preparation_id': preparation.handle}, 'write')
             path = result.get('saved_path')
             resource = result.get('resource_ref', {}).get('resourceId')
+            if not isinstance(resource, str) or not resource or len(resource) > 512:
+                raise BackendError('artifact:ownership_conflict', 'submit', 'unknown')
+            if path is not None and (not isinstance(path, str) or len(path) > 4096 or Path(path).resolve() != request.save_path.resolve()):
+                raise BackendError('artifact:ownership_conflict', 'submit', 'unknown')
+            stripped = result.get('metadata_stripped')
+            stripped = stripped if type(stripped) is bool else None
+            actual = {}
+            for key in ('seed', 'steps', 'scale', 'sampler', 'width', 'height'):
+                value = result.get(key)
+                if (key != 'sampler' and type(value) in (int, float) and abs(value) < 1e20) or (key == 'sampler' and isinstance(value, str) and len(value) <= 128):
+                    actual[key] = value
+            # Managed requests have an intent receipt. Persist before any further tool call.
+            from stylelora.generation.artifacts import record_submission
+            if (request.save_path.parent / 'attempt.json').exists():
+                record_submission(request.save_path.parents[4], request,
+                    GenerationResult(resource, Path(path) if path else None, metadata_stripped=stripped))
             if path is None and isinstance(resource, str) and resource:
                 # A fresh controlled export; any unknown result remains behind the barrier.
                 result = await self._call('save_generated_image', {'resource_id': resource, 'save_path': str(request.save_path)}, 'write')
@@ -231,7 +319,7 @@ class LauncherBackend:
             if not isinstance(path, str) or Path(path).resolve() != request.save_path.resolve():
                 raise BackendError('artifact:ownership_conflict', 'submit', 'unknown')
             self.inflight = False
-            return GenerationResult(resource, request.save_path, metadata_stripped=result.get('metadata_stripped'), actual=result)
+            return GenerationResult(resource, request.save_path, metadata_stripped=stripped, actual=actual)
         except BackendError:
             raise
         except Exception:
@@ -241,6 +329,17 @@ class LauncherBackend:
         self._prepared(preparation)
         await self._call('cancel_generation_preparation', {'preparation_id': preparation.handle}, 'write')
         self.preparations.pop(preparation.handle)
+
+    async def recover_artifact(self, request, receipt):
+        """Export only the durably bound resource; never submit a generation."""
+        if receipt.phase != 'submitted' or not receipt.resource_id or request.save_path.exists():
+            return
+        if receipt.backend_instance != self.instance:
+            raise BackendError('artifact:ownership_conflict', 'recovery')
+        result = await self._call('save_generated_image',
+            {'resource_id': receipt.resource_id, 'save_path': str(request.save_path)}, 'write')
+        if result.get('saved_path') != str(request.save_path):
+            raise BackendError('artifact:ownership_conflict', 'recovery', 'unknown')
 
     async def reconcile(self, item, receipt=None):
         status = await self._call('get_generation_status')
