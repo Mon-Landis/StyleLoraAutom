@@ -177,6 +177,46 @@ class ConfigStore:
         return RoleBinding(endpoint.endpoint_id, role, row['model'], endpoint.protocol,
                            row['revision'])
 
+    def role_map(self) -> tuple[int, dict]:
+        """Read all bindings under one product lock for an atomic API snapshot."""
+        with config_lock(self.path):
+            document = self._read()
+            return document['revision'], {
+                role: ({'endpoint_id': row['endpoint_id'], 'model': row['model']}
+                       if (row := document['roles'].get(role)) and row['endpoint_id'] else None)
+                for role in ROLES}
+
+    def save_role_map(self, roles: dict, *, expected_revision: int) -> tuple[int, dict]:
+        """Validate and replace the complete map in a single atomic publication."""
+        if not isinstance(roles, dict) or set(roles) != set(ROLES):
+            raise LlmFailure('llm:role_invalid', outcome='not_sent')
+        with config_lock(self.path):
+            document = self._read()
+            if document['revision'] != expected_revision:
+                raise LlmFailure('llm:revision_conflict', outcome='not_sent')
+            updated = {}
+            changed = False
+            for role, binding in roles.items():
+                if role in ('clean', 'clean_nsfw') and binding is not None:
+                    raise LlmFailure('llm:role_invalid', outcome='not_sent')
+                if binding is not None:
+                    if not isinstance(binding, dict) or set(binding) != {'endpoint_id', 'model'}:
+                        raise LlmFailure('llm:role_invalid', outcome='not_sent')
+                    endpoint = self.endpoint(binding['endpoint_id'])
+                    model = next((m for m in endpoint.models if m.name == binding['model']), None)
+                    if model is None or (role in ('vision', 'vision_nsfw', 'rating') and not model.supports_images):
+                        raise LlmFailure('llm:image_unsupported', outcome='not_sent')
+                target = binding or {'endpoint_id': None, 'model': None}
+                old = document['roles'].get(role)
+                different = (old is None and binding is not None) or (old is not None and any(old[k] != target[k] for k in target))
+                changed |= different
+                updated[role] = {**target, 'revision': (old['revision'] if old else 0) + int(different)}
+            if changed:
+                document['roles'] = updated
+                document['revision'] += 1
+                atomic_json(self.path, document)
+            return document['revision'], {role: dict(binding) if binding else None for role, binding in roles.items()}
+
 
 def load_endpoints(path: Path | None = None) -> tuple[EndpointConfig, ...]:
     return ConfigStore(path).load_endpoints()
