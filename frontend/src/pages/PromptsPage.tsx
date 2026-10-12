@@ -10,7 +10,7 @@ export function PromptsPage() {
   const [name, setName] = useState('');
   const q = useQuery({ queryKey: ['prompt-tasks'], queryFn: listPromptTasks });
   const m = useMutation({
-    mutationFn: () => createPromptTask({ name: name.trim() }),
+    mutationFn: () => createPromptTask({ plan: { primary_dimensions: ['scene', 'lighting'], cell_values: { scene: ['forest'], lighting: ['sunlight'] }, target_count: 1 }, prompt_dictionary_ids: [name.trim()], coverage_enabled: false, optimize: false }),
     onSuccess: () => { setName(''); void qc.invalidateQueries({ queryKey: ['prompt-tasks'] }); },
   });
   return (
@@ -29,7 +29,7 @@ export function PromptsPage() {
       </Panel>
       <Panel title="新建任务">
         <div className="form-row">
-          <Field label="名称"><input value={name} onChange={(e) => setName(e.target.value)} /></Field>
+          <Field label="提示词字典 ID"><input value={name} onChange={(e) => setName(e.target.value)} /></Field>
           <Button variant="primary" disabled={!name.trim() || m.isPending} onClick={() => m.mutate()}>创建</Button>
         </div>
         {m.error && <ErrorView error={m.error} feature="创建提示词任务" />}

@@ -13,7 +13,7 @@ export function RuleReplace({ pid, selectedIds }: { pid: string; selectedIds: nu
   const [err, setErr] = useState<unknown>(null);
   const [done, setDone] = useState(false);
   const log = useQuery({ queryKey: ['oplog', pid], queryFn: () => listOperationLog(pid), retry: false });
-  const last = log.data?.items.find((r) => r.kind?.includes('rule') && r.status !== 'undone');
+  const last = log.data?.items.find((r) => r.status === 'applied');
 
   const run = async (fn: () => Promise<void>) => {
     setErr(null);
@@ -33,7 +33,7 @@ export function RuleReplace({ pid, selectedIds }: { pid: string; selectedIds: nu
       <Field label="查找"><input value={find} onChange={(e) => { setFind(e.target.value); setPreview(null); setDone(false); }} /></Field>
       <Field label="替换为"><input value={repl} onChange={(e) => { setRepl(e.target.value); setPreview(null); setDone(false); }} /></Field>
       <div className="row">
-        <Button disabled={!find || !selectedIds.length} onClick={() => void run(async () => setPreview(await previewRule(pid, { op: 'replace', find, replace: repl, layer: 'manual' }, selectedIds)))}>预览</Button>
+        <Button disabled={!find.trim() || !selectedIds.length} onClick={() => void run(async () => setPreview(await previewRule(pid, { schema_version: 1, delete: { mode: 'all', tags: [find] }, write: repl.trim() ? { mode: 'all', tags: [repl] } : null, condition: null }, selectedIds)))}>预览</Button>
         {preview && <Badge tone="info">影响 {preview.affected_count ?? preview.total ?? '?'} 张</Badge>}
         <HoldToConfirm kind="danger" disabled={!preview} onConfirm={() => void run(async () => { await applyRule(pid, preview!); setPreview(null); setDone(true); refresh(); })}>
           长按执行
@@ -47,7 +47,7 @@ export function RuleReplace({ pid, selectedIds }: { pid: string; selectedIds: nu
           kind="secondary"
           disabled={!last}
           onConfirm={() => {
-            const id = last?.operation_id ?? last?.id;
+            const id = last?.op_id;
             if (id != null && last?.version) void run(async () => { await undoOperation(pid, id, last.version!); refresh(); });
           }}
         >

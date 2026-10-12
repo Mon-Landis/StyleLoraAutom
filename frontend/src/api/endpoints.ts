@@ -1,5 +1,5 @@
 import { get, post, put } from './client';
-import type { ImageFilter, ImageItem, Page, ReviewStatus } from './types';
+import type { ImageFilter, ImageItem, Page, ReviewStatus, ManualResult } from './types';
 
 const P = (pid: string) => `/api/projects/${pid}`;
 
@@ -61,11 +61,11 @@ export const getAnnotation = (pid: string, id: number) =>
   get<AnnotationView>(`${P(pid)}/annotations/${id}`).then((r) => r.data);
 
 export const putManual = (pid: string, id: number, view: AnnotationView, tags: AnnotationTag[], nl: string | null) =>
-  put<AnnotationView>(
+  put<ManualResult>(
     `${P(pid)}/annotations/${id}/manual`,
     { tags, natural_language: nl ?? undefined, write_nl: nl !== null, read_set: view.refs },
     { ifMatch: view.version },
-  ).then((r) => r.data);
+  ).then(() => getAnnotation(pid, id));
 
 export interface Preview {
   preview_id: string;
@@ -78,14 +78,13 @@ export const previewRule = (pid: string, rule: unknown, selectedIds: number[]) =
 export const applyRule = (pid: string, p: Preview) =>
   post<Record<string, unknown>>(`${P(pid)}/rules/apply`, { preview_id: p.preview_id, digest: p.digest }, { ifMatch: p.digest }).then((r) => r.data);
 export interface OpLogRow {
-  operation_id?: number;
-  id?: number;
-  kind?: string;
-  status?: string;
-  version?: string;
-  applied_at?: string;
+  op_id: number;
+  status: 'applied' | 'undone';
+  version: string;
+  affected_count: number;
+  created_at: string;
 }
 export const listOperationLog = (pid: string) =>
-  get<Page<OpLogRow>>(`${P(pid)}/operation-log`, { query: { limit: 20 } }).then((r) => r.data);
+  get<Page<OpLogRow>>(`${P(pid)}/operation-log`, { query: { limit: 20, sort: '-id' } }).then((r) => r.data);
 export const undoOperation = (pid: string, id: number, version: string) =>
   post<unknown>(`${P(pid)}/operation-log/${id}/undo`, {}, { ifMatch: version }).then((r) => r.data);

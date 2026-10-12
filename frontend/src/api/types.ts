@@ -79,6 +79,24 @@ export interface Operation {
   version: string;
 }
 
+export interface ManualResult {
+  annotation_ids: number[];
+  changed: boolean;
+}
+
+export interface ExportView {
+  export_id: string;
+  project_id: string;
+  status: 'planned' | 'running' | 'finished' | 'failed' | 'canceled' | 'interrupted';
+  selected: number;
+  exported: number;
+  skipped: number;
+  failed: number;
+  report_url: string | null;
+  relative_dir: string | null;
+  version: string;
+}
+
 export interface ProjectView {
   project_id: string;
   metadata: { name?: string; trigger_word?: string };

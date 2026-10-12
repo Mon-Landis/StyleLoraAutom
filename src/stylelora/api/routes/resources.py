@@ -161,7 +161,7 @@ async def retry(project_id: str, identity: int, request: Request):
 async def undo(project_id: str, identity: int, request: Request):
     rt, token = runtime(request), expected(request)
     async with rt.lease(project_id) as ctx:
-        return await service(rt).undo(ctx, identity, token)
+        return resource(await service(rt).undo(ctx, identity, token))
 
 
 @router.post('/projects/{project_id}/import-schemes')

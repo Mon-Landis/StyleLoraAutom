@@ -247,7 +247,7 @@ class Resources:
             check(expected, self.token(ctx, 'operation-log', row))
             return commands.undo_rule(db, identity)
         result = await asyncio.wrap_future(submit_write(ctx.handle, work))
-        return plain(result)
+        return self.view(ctx, 'operation-log', result.value)
 
     async def retry(self, ctx, identity, value, expected):
         fields(value, {'expected_attempt'}, {'expected_attempt'})

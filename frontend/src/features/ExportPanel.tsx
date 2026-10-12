@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { getOperation, listExportSchemes, previewExport, runExport, type ExportPreview } from '../api/more';
-import type { Operation } from '../api/types';
+import { getExport, listExportSchemes, previewExport, runExport, type ExportPreview } from '../api/more';
+import type { ExportView } from '../api/types';
+import { waitOperation } from '../lib/operation';
 import { Badge, Banner, Button, Field, Panel, ProgressBar } from '../ui/primitives';
 import { HoldToConfirm } from '../ui/HoldToConfirm';
 import { ErrorView } from '../ui/ErrorView';
@@ -10,7 +11,7 @@ export function ExportPanel({ pid }: { pid: string }) {
   const schemes = useQuery({ queryKey: ['export-schemes', pid], queryFn: () => listExportSchemes(pid), retry: false });
   const [scheme, setScheme] = useState<number | ''>('');
   const [preview, setPreview] = useState<ExportPreview | null>(null);
-  const [op, setOp] = useState<Operation | null>(null);
+  const [op, setOp] = useState<ExportView | null>(null);
   const [err, setErr] = useState<unknown>(null);
 
   const guard = async (fn: () => Promise<void>) => {
@@ -21,12 +22,12 @@ export function ExportPanel({ pid }: { pid: string }) {
       setErr(e);
     }
   };
-  const follow = async (start: Operation) => {
+  const follow = async (start: ExportView) => {
     let cur = start;
     setOp(cur);
-    while (cur.status === 'pending' || cur.status === 'running') {
+    while (cur.status === 'planned' || cur.status === 'running') {
       await new Promise((r) => setTimeout(r, 500));
-      cur = await getOperation(cur.operation_id);
+      cur = await getExport(pid, cur.export_id);
       setOp(cur);
     }
   };
@@ -42,18 +43,17 @@ export function ExportPanel({ pid }: { pid: string }) {
         </select>
       </Field>
       <div className="row">
-        <Button disabled={scheme === ''} onClick={() => void guard(async () => setPreview(await previewExport(pid, Number(scheme))))}>预览</Button>
+        <Button disabled={scheme === ''} onClick={() => void guard(async () => setPreview((await waitOperation(await previewExport(pid, Number(scheme)))).result as ExportPreview))}>预览</Button>
         {preview && <Badge tone="info">将导出 {preview.selected} 张</Badge>}
-        <HoldToConfirm kind="secondary" disabled={!preview || blocking.length > 0} onConfirm={() => void guard(async () => follow(await runExport(pid, preview!)))}>
+        <HoldToConfirm kind="secondary" disabled={!preview || blocking.length > 0} onConfirm={() => void guard(async () => follow(await runExport(pid, Number(scheme), preview!)))}>
           长按导出
         </HoldToConfirm>
       </div>
       {preview?.issues.map((i, n) => <Banner key={n} tone={i.severity === 'error' ? 'danger' : 'warning'}>{i.code}</Banner>)}
       {op && (
         <div>
-          <ProgressBar value={op.completed} max={op.total} />
-          <Badge tone={op.status === 'done' ? 'success' : op.status === 'failed' ? 'danger' : 'info'}>{op.status}</Badge>
-          {op.error && <Banner tone="danger">{op.error.code}</Banner>}
+          <ProgressBar value={op.exported + op.skipped + op.failed} max={op.selected} />
+          <Badge tone={op.status === 'finished' ? 'success' : op.status === 'failed' ? 'danger' : 'info'}>{op.status}</Badge>
         </div>
       )}
       {err != null && <ErrorView error={err} feature="导出" />}

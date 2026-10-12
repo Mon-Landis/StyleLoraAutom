@@ -20,7 +20,7 @@ export function ExecutorPanel({ pid, selectedIds }: { pid: string; selectedIds: 
     const refetch = () => void qc.invalidateQueries({ queryKey: ['jobs', pid] });
     const h = connectSse({
       projectId: pid,
-      topics: ['jobs'],
+      topics: ['job'],
       onEvent: (e) => { if (e.kind.startsWith('job')) refetch(); },
       onUp: () => dispatch('sse_up'),
       onDown: () => dispatch('sse_down'),
