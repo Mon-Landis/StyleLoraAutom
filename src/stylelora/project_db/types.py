@@ -129,6 +129,7 @@ class ImageArtifact:
     file_size: int
     png_meta: JsonObject | None
     receipt_digest: str
+    generation_validation: JsonObject | None = None
 
 
 @dataclass(frozen=True)

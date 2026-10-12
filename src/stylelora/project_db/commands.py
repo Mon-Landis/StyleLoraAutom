@@ -72,7 +72,7 @@ def start_source(db: WriteSession, source_id: int, items: Sequence[ItemSeed]) ->
                 integer(size,64)
                 if size % 64:
                     raise ValidationError('Pixel sizes must be multiples of 64')
-        if source.target_count != len(items) or any(i.aspect is None for i in items):
+        if source.target_count != len(items):
             raise ValidationError('NAI target/aspect mismatch')
     with authority(db,'start_source'):
         sources.seed_items(db,source_id,items)

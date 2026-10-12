@@ -31,6 +31,10 @@ def immutable_part(receipt):
 
 
 def validate_artifact(root, artifact):
+    if artifact.generation_validation is not None:
+        safe_snapshot(artifact.generation_validation)
+        if artifact.generation_validation.get('validation') not in ('pass', 'mismatch', 'unverifiable'):
+            raise ValidationError('Invalid generation inspection')
     for value in (artifact.item_id,artifact.attempt,artifact.width,artifact.height,artifact.file_size):
         integer(value,1)
     sha256(artifact.sha256)
@@ -62,6 +66,8 @@ def prepare_receipt(root: Path, artifact: ImageArtifact, originals=()) -> ImageA
         os.fsync(stream.fileno())
     payload = asdict(artifact)
     payload.pop('receipt_digest')
+    if payload.get('generation_validation') is None:
+        payload.pop('generation_validation', None)
     receipt = {'schema_version':1,'complete':True,'artifact':payload,'originals':[asdict(v) for v in originals]}
     receipt['digest'] = digest(immutable_part(receipt))
     target = receipt_path(root,artifact.item_id,artifact.attempt)
@@ -103,6 +109,8 @@ def register_artifact(db, artifact, originals):
         image = images.get_image(db,item.image_id)
         payload = asdict(artifact)
         payload.pop('receipt_digest')
+        if payload.get('generation_validation') is None:
+            payload.pop('generation_validation', None)
         evidence_digest = digest({'schema_version':1,'complete':True,'artifact':payload,'originals':[asdict(v) for v in originals]})
         if (image.sha256,image.source_id,image.width,image.height,image.file_size,image.phash,image.png_meta_json) != (artifact.sha256,item.source_id,artifact.width,artifact.height,artifact.file_size,artifact.phash,artifact.png_meta) or artifact.receipt_digest != evidence_digest:
             raise ArtifactConflict('Completed item differs')
@@ -174,6 +182,8 @@ def register_artifact(db, artifact, originals):
         for original in originals:
             value = AnnotationInput(identity,'original',original.type,original.content,original.confidence,params=original.params,cache_key=original.cache_key)
             annotations.append_version(db,value,expected=CurrentRef(identity,'original',original.type,None),policy='content')
+    if artifact.generation_validation and artifact.generation_validation['validation'] == 'mismatch':
+        images.set_review(db,identity,expected='unreviewed',target='reject')
     cas(db,'source_items',item.item_id,{'status':'done','image_id':identity,'error':None,'updated_at':now()}, {'status':'sent','attempts':artifact.attempt})
     # Cleanup is best effort: committed outcome must not appear failed because an
     # antivirus temporarily holds the receipt. Recovery can clean it next open.
