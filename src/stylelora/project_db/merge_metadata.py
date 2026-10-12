@@ -44,7 +44,10 @@ def effective_evidence(db, image_id, read_set):
 
 def make_snapshot(db, image_id, layer, values, read_set):
     tags(values)
-    evidence, removals = effective_evidence(db,image_id,read_set)
+    evidence, _ = effective_evidence(db,image_id,read_set)
+    previous = get_current(db,image_id,layer,'tags')
+    removals = {normalize(r['tag']):dict(r) for r in
+                (previous.params_json.get('merge_meta',{}).get('removals',[]) if previous else [])}
     new_id = db.execute('SELECT coalesce(max(annotation_id),0)+1 FROM annotations').fetchone()[0]
     origins = {}
     for tag in values:

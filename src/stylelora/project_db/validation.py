@@ -6,6 +6,7 @@ import json
 import math
 from pathlib import Path, PureWindowsPath
 import re
+from stylelora.tagging.normalization import normalize_tag
 
 from .errors import UnsafePath, ValidationError
 from .types import JsonObject, Scope, Tag
@@ -49,7 +50,7 @@ def confidence(value: float | None) -> None:
 
 def normalize(value: str) -> str:
     text(value, nonempty=True)
-    result = value.strip().lower().replace('_', ' ').strip()
+    result = normalize_tag(value)
     if not result:
         raise ValidationError('Empty normalized tag')
     return result

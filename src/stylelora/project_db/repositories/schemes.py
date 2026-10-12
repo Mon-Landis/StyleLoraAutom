@@ -24,7 +24,7 @@ def validate(value):
         if not isinstance(value.pipeline_json,tuple):
             raise ValidationError('Pipeline tuple required')
         for processor in value.pipeline_json:
-            safe_snapshot(processor)
+            safe_snapshot(processor,versioned=False)
     else:
         if value.reader != 'txt_sidecar':
             raise UnsupportedScheme('Unsupported reader')
@@ -123,9 +123,10 @@ def require_executable(scheme: ExportSchemeRow) -> None:
 
 
 def initialize_defaults(db) -> None:
-    create_import_scheme(db,ImportSchemeInput('Default',params_json={'schema_version':1,'encoding':'utf-8-sig','tags_separator':',','paragraphs':'blank_lines','errors':'strict'},is_default=True))
-    create_export_scheme(db,ExportSchemeInput('Default',filter_json={'schema_version':1,'review_statuses':['keep'],'include_missing':False},
+    create_import_scheme(db,ImportSchemeInput('Default',params_json={'schema_version':1,'encoding':'utf-8-sig','recursive':True,'layout':'first_line_blank_nl','tokenizer_version':'comma-v1','on_unverifiable':'preview_error'},is_default=True))
+    create_export_scheme(db,ExportSchemeInput('Default',filter_json={'schema_version':1,'review_statuses':['keep'],'source_ids':None,'include_missing':False},
         caption_config_json={'schema_version':1,'tag_layers':['original','wd','llm','manual','rule'],'layer_priority':['manual','rule','llm','wd','original'],
                              'wd_min_confidence':0.0,'wd_null_confidence':'exclude','tag_sort':'layer_first','include_nl':False,
-                             'nl_priority':['manual','llm','original'],'trigger_first':True,'separator':', '},
-        output_config_json={'schema_version':1,'directory':'{scheme_id}/{utc}-{random}','new_directory':True}))
+                              'nl_priority':['manual','llm','original'],'trigger_position':'first','separator':', ','blocklist_mode':'warn'},
+        output_config_json={'schema_version':1,'image_mode':'copy','filename':'{image_id}{ext}','caption_encoding':'utf-8',
+                            'include_json':False,'require_nonempty_tags':False,'subdirectory':'','overwrite':'error'}))

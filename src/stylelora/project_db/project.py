@@ -7,6 +7,7 @@ import shutil
 import sqlite3
 import tempfile
 import threading
+from contextlib import contextmanager
 
 from .connection import WriterQueue, ReadSession, connect
 from .errors import ProjectExists, ProjectLocked, VersionMismatch, Corrupt, ValidationError
@@ -176,3 +177,12 @@ def update_metadata(project: ProjectHandle, *, name: str, trigger_word: str) -> 
         migrations.atomic_json(project.root/'project.json',asdict(metadata))
         object.__setattr__(project,'metadata',metadata)
         return metadata
+
+
+@contextmanager
+def read_project_snapshot(project: ProjectHandle):
+    """Freeze project metadata together with the DAL read snapshot."""
+    from .connection import read_snapshot
+    with _guard:
+        with read_snapshot(project) as db:
+            yield db, project.metadata
