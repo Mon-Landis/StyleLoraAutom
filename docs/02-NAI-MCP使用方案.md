@@ -29,7 +29,7 @@
 | 敏感操作前询问（默认） | 每个写操作都要在 Launcher 里点确认 | 不适合批量 |
 | 完全访问 | 0 Anlas 直接执行；付费、永久删除仍要人确认 | **批量生产用这个** |
 
-结论：批量生产要求每张图 0 Anlas。免费条件按 NAI 公开规则通常是 Opus 订阅 + 尺寸 ≤ 1MP + steps ≤ 28 + 单张 `[待确认：以 estimated_anlas 实测为准]`。任何会触发付费确认的参数组合都会卡住流水线，所以 `prepare_generation` 返回的 `estimated_anlas` 必须等于 0 才提交，否则这条记为 failed 并报警。
+结论（2026-10-12 修订）：NAI 已无免费图，`estimated_anlas == 0` 实际消耗的是自回体力条额度。原「必须等于 0 才提交」的拦截规则已废止，改为**费用提醒**：每张 prepare 都检查 `estimated_anlas`，从 0 变为非 0 时暂停该数据源并提醒用户，确认后继续，不做死拦截（见 docs/05 §7.3、docs/04 F04）。注意非 0 时 Launcher 本身仍会弹付费确认，即使在完全访问模式下。
 
 ## 3. 核心生图链路
 
@@ -37,7 +37,7 @@
 update_generation_settings   # 每个 run 开始时设一次：model / sampler / steps / scale / uc_preset(=None) / quality_toggle(=false)
   ↓
 prepare_generation           # 每张一次，operation=generate, count=1, characters=[]
-  ↓ 校验 estimated_anlas == 0 且 confirmation_required == false
+  ↓ 检查 estimated_anlas：从 0 变非 0 时暂停数据源并提醒用户（费用提醒，不拦截）
 submit_generation(preparation_id)
   ↓ 返回 image + resource_ref + saved_path
 读 saved_path 的 PNG tEXt → 回写 manifest.png_meta_prompt

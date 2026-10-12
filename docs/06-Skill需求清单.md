@@ -30,12 +30,15 @@
 | R6 | `character-tag-auditor` | 迁移 TagCleaner 现有 | A-pose 角色审计 | 预留（角色线） |
 
 ### R1 prompt-composer（初版已完成：`skills/prompt-composer/`）
-- 基于用户的 anima-prompt skill 改写（doc-writer 执行）：保留 Tag Order、表情补齐、可见性/出画推理、view 措辞、多人物绑定规则、scenery-priority（改为 `composition_mode=scenery_first`）、poses 查表（已剔除 NSFW 条目）；删除角色查表、NSFW、权重、负面、修改请求、人工输出格式
-- 输入 JSON：`features`（维度 → tag 数组）、`rating_policy`、`nl_enabled`、`composition_mode`（normal / scenery_first）、`tag_range`
-- 输出 JSON：`{ status: ok|refused_nsfw|invalid_input, tags, natural_language, out_of_frame, added, dropped[{tag,reason}], reason? }`
+- 基于用户的 anima-prompt skill 改写（doc-writer 执行）：保留 Tag Order、表情补齐、可见性/出画推理、view 措辞、多人物绑定规则、scenery-priority（改为 `composition_mode=scenery_first`）；删除姿势查表（模糊姿势按 Danbooru 常用 tag 转写，无法确定则直译）、角色查表（角色 tag 仅在输入带有时输出）、NSFW、权重、负面、修改请求、人工输出格式
+- 输入 JSON：`features`（维度 → tag 数组）、`rating_policy`、`nl_enabled`、`composition_mode`（normal / scenery_first）、`tag_range`、`aspect_hint`（可选，`landscape` / `portrait` / `square` / `null`；非 null 时输出的 `aspect` 照抄，为 null 或缺省时模型按 SKILL.md 3.6 自行判断）
+- 输出 JSON：`{ status: ok|refused_nsfw|invalid_input, tags, natural_language, out_of_frame, added, dropped[{tag,reason}], aspect, reason? }`
+- 输出 `aspect`（N2）：`landscape` / `portrait` / `square`；`status=ok` 时必填，非 ok 时为 `null`。只表达图幅，不影响 tags；画幅类词（`landscape orientation`、`vertical composition` 等）属禁用元标签，不得进入 tags / 自然语言
+- 全部特征命中禁用词：丢弃命中 tag 后无剩余 tag 时，返回 `status=invalid_input`，`reason` 为「全部特征命中禁用词」，不补全兜底
+- 禁用词表：SKILL.md 3.5 分 A–H 八类词表 + I 边界词裁决 + J 兜底规则；画风信息只能由 NAI 侧独立画风段承载
 - 目标是 NAI：空格分词、默认无权重、严禁画风/画师/媒介/质量词
-- 9 个 JSON 示例块已用解析器校验通过
-- 待复核：doc-writer 自行做的 12 项判断（冲突优先级、禁用词补充、scenery 簇位置等），见第 5 节
+- JSON 示例块：N2 改动后 9 个块已用 PowerShell ConvertFrom-Json 重新校验，全部合法
+- 待复核：doc-writer 自行做的判断（冲突优先级、禁用词补充、scenery 簇位置、3.6 aspect 判定表等），见 SKILL.md 对应章节
 
 ### R0 通用规则：未验证 rating 的请求标注（R1 / R2 / R3 / R5）
 

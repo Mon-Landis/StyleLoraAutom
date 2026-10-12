@@ -28,8 +28,11 @@ The program passes one JSON object:
 | `nl_enabled` | bool | `true`: write a natural-language paragraph. `false`: `natural_language` must be `null`. |
 | `composition_mode` | string | `"normal"` or `"scenery_first"` (see section 3.4). |
 | `tag_range` | [int, int] | Allowed tag count `[min, max]`. Default `[15, 40]`. |
+| `aspect_hint` | string \| null | 可选，缺省等同 `null`。取值 `"landscape"` / `"portrait"` / `"square"`：非 null 时输出的 `aspect` 照抄该值；为 `null` 或缺省时按 3.6 自行判断。取值不在这三个之内按 `null` 处理。 |
 
 If the input is not parseable, lacks `features`, or `features` has no usable tags, return `status="invalid_input"` (section 5).
+
+全部特征命中禁用词：丢弃所有命中 3.5 的 tag 之后，`features` 中没有任何剩余 tag 时，同样返回 `status="invalid_input"`，`reason` 写 `全部特征命中禁用词`。不得用自行补全的 tag 兜底成 `ok`。检查优先级：`refused_nsfw`（第 6 节）> `invalid_input` > 正常组合。
 
 特征描述模糊或有歧义时（尤其是姿势），按 Danbooru 常用 tag 的写法转写；无法确定对应 tag 时，按字面直译。不查任何参考表。
 
@@ -160,6 +163,8 @@ Applies when the features contain two or more characters. These reduce tag bleed
 - 来源与版权：`official art`、`promotional art`、`game cg`、`event cg`、`official style`、`third-party edit`、`cover`、`cover page`、`scan`、`screencap`、`wallpaper`、`poster`、`magazine scan`
 - 数据库标记：`bad id`、`bad pixiv id`、`bad twitter id`、`bad link`、`md5 mismatch`、`resolution mismatch`、`source smaller`、`artist request`、`character request`、`copyright request`、`commentary`、`commentary request`、`english commentary`、`translation request`、`translated`、`partially translated`、`check translation`、`revision`、`duplicate`、`alternate version`
 - 文字与标识：`speech bubble`、`thought bubble`、`text`、`english text`、`chinese text`、`japanese text`、`korean text`、`text focus`、`copyright name`、`logo`、`dated`、`border`、`letterboxed`、`pillarboxed`、`frame`（作为画框时）、`comic panel`、`multiple views`、`split screen`、`sample`、`character name`、`stats`
+- 画幅与比例（图幅由 `aspect` 字段单独承载，内容段不得出现）：`landscape orientation`、`portrait orientation`、`square orientation`、`vertical`、`horizontal`、`vertical orientation`、`horizontal orientation`、`vertical composition`、`horizontal composition`、`vertical image`、`horizontal image`、`tall image`、`wide image`、`square image`、`square composition`、`aspect ratio`、`widescreen`、`wide screen`、`16:9`、`9:16`、`1:1`、`4:3`、`3:4`、`1024x1024`（及任意 `数字x数字` 尺寸写法）、`landscape`、`square`（后两者仅在整个 tag 完全一致时命中）
+- 画幅类的边界：`wide shot`、`very wide shot`、`full body`、`upper body`、`close-up`、`portrait`（取景含义，头肩部取景）是 view 类取景 tag，描述画面包含的范围而非图幅，允许使用。画面物体属性（如 `vertical stripes`、`horizontal stripes`、`square pupils`）按匹配规则例外 1 保留。
 
 #### I. 景深类边界词的判定规则（对 F 类中处于"构图意图"与"后处理"边界的词作明确裁决）
 
@@ -188,6 +193,33 @@ Applies when the features contain two or more characters. These reduce tag bleed
 - `cherry blossoms`：允许。能指向具体的花。
 - `hair blowing in wind`：允许。可见的动作与现象。
 
+### 3.6 图幅 aspect 判定
+
+`status="ok"` 时必须输出 `aspect`，取值只能是 `"landscape"`、`"portrait"`、`"square"` 之一。
+
+**取值来源（按顺序，命中即停）**：
+1. 输入 `aspect_hint` 是合法三值之一：`aspect` 照抄该值，不再判断，也不得因 hint 与构图不一致而改 tag。
+2. `aspect_hint` 为 `null` 或缺省：按下表自行判断。
+
+**自行判断表（按顺序，命中即停）**：
+
+| 顺序 | 条件 | aspect |
+|---|---|---|
+| 1 | `composition_mode=scenery_first` | `landscape` |
+| 2 | 两个及以上角色左右并排或横向排开 | `landscape` |
+| 3 | 宽景或横向场景：`wide shot`、`very wide shot`，或场景以海平线、天际线、城市远景、原野等横向延展物为主；`no humans` 的风景同理 | `landscape` |
+| 4 | 躺姿或横向主体：`lying`、`on back`、`on side`、`on stomach`、`reclining` | `landscape` |
+| 5 | 脸部或头肩特写：`close-up`、`portrait`、`face`；或明确的左右对称构图；或 `no humans` 且画面主体是单个居中的物件 | `square` |
+| 6 | 单人全身、站姿、坐姿、`upper body`、`cowboy shot`，或其他竖长主体（高塔、树干、瀑布、长裙垂落等） | `portrait` |
+| 7 | 以上都不满足、或拿不准 | `portrait` |
+
+多个条件同时成立时，表中靠前的优先。
+
+**与 tag 的关系**：
+- `aspect` 与 `tags` 不冲突即可。不得为了配合 `aspect` 增删或改写任何 tag；不得因 `aspect` 触发 `added` / `dropped`。
+- `tags` 与 `natural_language` 里不得出现画幅类词（`landscape orientation`、`vertical composition`、`square image` 等，完整清单见 3.5 H 类）。图幅只通过 `aspect` 字段表达。
+- 取景类 tag（`wide shot`、`full body`、`upper body`、`close-up`）照常按 3.1 第 7 类输出，不受 `aspect` 影响。
+
 ## 4. Conflict handling
 
 When input features conflict with each other (e.g. `sitting` + `running`, `indoors` + `outdoors`, `no humans` + `1girl`, `day` + `night`):
@@ -195,7 +227,7 @@ When input features conflict with each other (e.g. `sitting` + `running`, `indoo
 - Put each discarded tag in `dropped` as `{"tag": "...", "reason": "..."}`.
 - Do not introduce new tags that conflict with the kept features.
 - You may add a few tags consistent with the scene to make the picture complete (e.g. a matching expression, a plausible background element). List every such tag in `added`. Do not add style, quality or character tags.
-- 输入 features 中命中 3.5 禁用词的 tag：直接丢弃，记入 `dropped`（`reason` 写 `forbidden: <类别字母 A-H>`；由兜底规则命中的写 `forbidden: J`），不得改写为近义词。丢弃后 tag 数低于 `tag_range` 下限时，补充符合场景的内容 tag 并记入 `added`。
+- 输入 features 中命中 3.5 禁用词的 tag：直接丢弃，记入 `dropped`（`reason` 写 `forbidden: <类别字母 A-H>`；由兜底规则命中的写 `forbidden: J`），不得改写为近义词。丢弃后仍有剩余 tag 但数量低于 `tag_range` 下限时，补充符合场景的内容 tag 并记入 `added`；丢弃后一个 tag 都不剩时，不补全，按第 2 节返回 `invalid_input`。
 - Tags dropped because of out-of-frame reasoning go in `out_of_frame`, not in `dropped`.
 
 ## 5. Output contract
@@ -209,22 +241,24 @@ Output exactly one JSON object and nothing else (no code fence, no text before o
   "natural_language": "..." | null,
   "out_of_frame": ["..."],
   "added": ["..."],
-  "dropped": [{"tag": "...", "reason": "..."}]
+  "dropped": [{"tag": "...", "reason": "..."}],
+  "aspect": "landscape" | "portrait" | "square" | null
 }
 ```
 
 Field rules:
+- `aspect`: `status="ok"` 时必填，只能是 `"landscape"` / `"portrait"` / `"square"`，判定见 3.6；`status` 不是 `ok` 时为 `null`。不得输出其他取值，不得省略该字段。
 - `tags`: ordered per section 3.1, lowercase, spaces not underscores, no weights, no duplicates, count within `tag_range`.
-- `natural_language`: when `nl_enabled=true`, one English paragraph that restates and enriches the visible scene (view, pose, positional relationships, visible atmosphere). It must stay consistent with `tags`, contain no negative statements, no word `camera`, and no section 3.5 forbidden word or paraphrase. When `nl_enabled=false`, it must be `null`.
+- `natural_language`: when `nl_enabled=true`, one English paragraph that restates and enriches the visible scene (view, pose, positional relationships, visible atmosphere). It must stay consistent with `tags`, contain no negative statements, no word `camera`, no section 3.5 forbidden word or paraphrase, and no image-orientation wording (see 3.6). When `nl_enabled=false`, it must be `null`.
 - `out_of_frame`, `added`, `dropped`: empty arrays when nothing applies.
-- When `status` is not `ok`: `tags` = `[]`, `natural_language` = `null`, other arrays empty, and add a `reason` string field explaining why. When `status` is `ok`, omit `reason`.
+- When `status` is not `ok`: `tags` = `[]`, `natural_language` = `null`, `aspect` = `null`, other arrays empty, and add a `reason` string field explaining why. When `status` is `ok`, omit `reason`.
 
 ## 6. Refusal rule
 
 This skill only handles `sfw`. If the input features contain explicit sexual or nudity content, return:
 
 ```json
-{"status": "refused_nsfw", "tags": [], "natural_language": null, "out_of_frame": [], "added": [], "dropped": [], "reason": "features contain explicit sexual or nudity content"}
+{"status": "refused_nsfw", "tags": [], "natural_language": null, "out_of_frame": [], "added": [], "dropped": [], "aspect": null, "reason": "features contain explicit sexual or nudity content"}
 ```
 
 Do not try to sanitize, rewrite or partially compose the prompt. Do not return a partial tag list.
@@ -252,7 +286,8 @@ Input:
   "rating_policy": "sfw",
   "nl_enabled": true,
   "composition_mode": "normal",
-  "tag_range": [15, 40]
+  "tag_range": [15, 40],
+  "aspect_hint": null
 }
 ```
 
@@ -265,11 +300,12 @@ Output:
   "natural_language": "A girl with long brown hair and green eyes sits at a table in a cafe, wearing a white sweater and holding a cup in her hands. Steam rises from the cup. She looks toward the viewer with a smile. A window is visible beside her and soft light falls across the scene. The framing is an upper body view.",
   "out_of_frame": ["plaid skirt", "legs"],
   "added": ["looking at viewer", "smile", "table"],
-  "dropped": []
+  "dropped": [],
+  "aspect": "portrait"
 }
 ```
 
-Notes: `upper body` hides the skirt and legs, so `plaid skirt` is listed in `out_of_frame` and removed from tags and NL. Expression was missing, so `smile` was added and listed in `added`.
+Notes: `upper body` hides the skirt and legs, so `plaid skirt` is listed in `out_of_frame` and removed from tags and NL. Expression was missing, so `smile` was added and listed in `added`. `aspect_hint` is `null`, so aspect is judged by 3.6: single character, upper body, sitting -> rule 6 -> `portrait`.
 
 ### Example 2: scenery_first with a character (positive)
 
@@ -302,11 +338,12 @@ Output:
   "natural_language": "Most of the frame is a wide beach at sunset, with an orange sky, scattered clouds and the ocean stretching to the horizon. A small girl stands in the lower third of the image, seen from a distance. She has long black hair and wears a white dress. The scenery clearly dominates the frame and the girl is secondary to it.",
   "out_of_frame": ["facial expression", "eye color"],
   "added": ["scenery", "sky", "clouds", "horizon", "orange sky"],
-  "dropped": []
+  "dropped": [],
+  "aspect": "landscape"
 }
 ```
 
-Notes: the character is tiny, so only silhouette-level tags are kept (no expression, no eye color). NL describes scenery first, then the character's position, then the character.
+Notes: the character is tiny, so only silhouette-level tags are kept (no expression, no eye color). NL describes scenery first, then the character's position, then the character. `aspect_hint` is absent; `composition_mode=scenery_first` -> 3.6 rule 1 -> `landscape`.
 
 ### Example 3: no humans, NL disabled (positive)
 
@@ -324,7 +361,8 @@ Input:
   "rating_policy": "sfw",
   "nl_enabled": false,
   "composition_mode": "normal",
-  "tag_range": [15, 40]
+  "tag_range": [15, 40],
+  "aspect_hint": "portrait"
 }
 ```
 
@@ -337,9 +375,12 @@ Output:
   "natural_language": null,
   "out_of_frame": [],
   "added": ["scenery", "tree", "rock", "moss", "grass", "leaves", "light rays"],
-  "dropped": []
+  "dropped": [],
+  "aspect": "portrait"
 }
 ```
+
+Notes: the input carries `aspect_hint="portrait"`, so `aspect` copies it even though 3.6 would judge this `wide shot` scene as `landscape`. The hint never changes tags: `wide shot` stays.
 
 ### Counter-example (wrong output)
 
@@ -370,7 +411,8 @@ Wrong output:
   "natural_language": null,
   "out_of_frame": [],
   "added": [],
-  "dropped": []
+  "dropped": [],
+  "aspect": "portrait"
 }
 ```
 
