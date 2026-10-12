@@ -8,7 +8,7 @@ from .connection import WriteSession
 
 from .errors import StateConflict, ValidationError, OutcomeConflict, PreviewStale, UndoConflict, BatchTooLarge
 from .types import *
-from .validation import choice, digest, dumps, integer, now, safe_snapshot, scope_json, text
+from .validation import choice, digest, dumps, integer, now, safe_snapshot, scope_json, text, error_reason
 from .repositories import sources, images, annotations, jobs, operations
 from .repositories.common import cas, get
 
@@ -128,10 +128,7 @@ def set_cost_policy(db: WriteSession, source_id: int, *, policy: Literal['deny',
 
 def fail_item(db: WriteSession, item_id: int, *, attempt: int, error: str) -> WriteResult[SourceItemRow]:
     integer(attempt,1)
-    text(error,nonempty=True)
-    # Accept only caller-sanitized symbolic errors, never raw remote responses.
-    if len(error)>200 or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:.- ' for c in error):
-        raise ValidationError('Sanitized error code required')
+    error_reason(error)
     item = sources.get_item(db,item_id)
     if item.attempts != attempt:
         raise StateConflict('Attempt changed')
@@ -176,16 +173,24 @@ def transition_job(db: WriteSession, job_id: int, *, expected: JobStatus, target
             raise ValidationError('Sanitized error required')
     cas(db,'jobs',job_id,{'status':target,'error':error,'updated_at':now(job.updated_at),
                         'finished_at':now() if target in ('done','failed','canceled') else None},{'status':expected})
+    if target == 'running':
+        jobs.begin_run(db,job_id)
+    elif target in ('done','failed','canceled') and db.writer:
+        db.after_commit.append(lambda: db.writer.job_runs.pop(job_id,None))
     return WriteResult(jobs.get_job(db,job_id),True)
 
 
 def commit_job_outcome(db: WriteSession, job_id: int, outcome: JobOutcome) -> WriteResult[JobRow]:
     job = jobs.get_job(db,job_id)
     choice(outcome.kind,('done','failed','skipped'))
+    if outcome.reason is not None:
+        error_reason(outcome.reason)
     progress = job.progress_json
     if outcome.image_id not in progress['image_ids']:
         raise OutcomeConflict('Image not in frozen scope')
-    signature = digest(outcome)
+    payload = asdict(outcome)
+    payload.pop('run_token')
+    signature = digest(payload)
     existing = progress['outcomes'].get(str(outcome.image_id))
     if existing:
         if existing['digest'] != signature:
@@ -195,10 +200,28 @@ def commit_job_outcome(db: WriteSession, job_id: int, outcome: JobOutcome) -> Wr
         return WriteResult(job,False)
     if job.status not in ('running','paused'):
         raise StateConflict('Job does not accept results')
+    if not outcome.run_token or db.writer is None or db.writer.job_runs.get(job_id) != outcome.run_token:
+        raise StateConflict('Stale job run')
     if outcome.kind != 'done' and outcome.annotations:
         raise ValidationError('Failure/skip cannot create annotations')
-    if outcome.kind == 'skipped' and outcome.reason == 'cache_hit' and job.mode == 'all':
-        raise StateConflict('All mode ignores other jobs cache')
+    if outcome.kind == 'skipped' and outcome.reason == 'cache_hit':
+        if job.mode == 'all':
+            raise StateConflict('All mode ignores other jobs cache')
+        targets = job.config_snapshot_json['target_types']
+        if len(outcome.annotation_ids) != len(targets):
+            raise OutcomeConflict('Cache evidence must cover all target layers')
+        allowed = job.config_snapshot_json.get('allowed_cache_keys',{}).get(str(outcome.image_id),{})
+        seen = set()
+        for identity in outcome.annotation_ids:
+            annotation = get(db,'annotations',AnnotationRow,identity)
+            if annotation.image_id != outcome.image_id or annotation.type in seen or annotation.type not in targets or not annotation.is_current:
+                raise OutcomeConflict('Invalid current cache evidence')
+            expected_source = 'wd' if job.executor == 'wd' else 'llm'
+            if annotation.source != expected_source or annotation.job_id is None or jobs.get_job(db,annotation.job_id).executor != job.executor:
+                raise OutcomeConflict('Cache evidence executor mismatch')
+            if annotation.cache_key not in allowed.get(annotation.type,[]):
+                raise OutcomeConflict('Cache key outside frozen configuration')
+            seen.add(annotation.type)
     ids = []
     keys = []
     if outcome.kind == 'done':

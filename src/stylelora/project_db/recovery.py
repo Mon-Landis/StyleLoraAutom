@@ -18,6 +18,7 @@ def pause_interrupted(db: WriteSession) -> RecoveryReport:
     db.execute("UPDATE jobs SET status='paused',updated_at=? WHERE status='running'",(now(),))
     if db.writer:
         db.after_commit.append(db.writer.cycles.clear)
+        db.after_commit.append(db.writer.job_runs.clear)
     return RecoveryReport(paused_source_ids=source_ids,paused_job_ids=job_ids)
 
 
@@ -27,6 +28,8 @@ def inspect_sent(project: ProjectHandle, item: SourceItemRow) -> RecoveryEvidenc
         paths = [relative_path(project.root,artifact.relative_staging_path)]
         if receipt.get('filename'):
             paths.append(relative_path(project.root/'images',receipt['filename'],filename=True))
+        if receipt.get('previous_path'):
+            paths.append(relative_path(project.root,receipt['previous_path']))
         if any(file_matches(path,artifact) for path in paths):
             return RecoveryEvidence(item.item_id,item.attempts,'complete',artifact,'local_receipt')
     except (OSError, ValueError, KeyError, TypeError, ArtifactConflict, ValidationError):
@@ -85,4 +88,5 @@ def recover_project(project: ProjectHandle) -> RecoveryReport:
         return known
     known = project.writer.submit(audit).result()
     orphan = tuple(sorted(p.name for p in (project.root/'images').iterdir() if p.is_file() and p.name not in known))
-    return replace(report,recovered_item_ids=tuple(recovered),failed_item_ids=tuple(failed),unresolved_item_ids=tuple(unresolved),missing_image_ids=tuple(missing),orphan_filenames=orphan)
+    cleanup = tuple(sorted(project.writer.receipt_cleanup_failures))
+    return replace(report,recovered_item_ids=tuple(recovered),failed_item_ids=tuple(failed),unresolved_item_ids=tuple(unresolved),missing_image_ids=tuple(missing),orphan_filenames=orphan,receipt_cleanup_failures=cleanup)

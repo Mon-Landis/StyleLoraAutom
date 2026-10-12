@@ -23,6 +23,8 @@ def effective_evidence(db, image_id, read_set):
     cutoffs = {}
     removals = {}
     for row in rows:
+        if row.source not in ('manual','rule'):
+            continue
         for entry in row.params_json.get('merge_meta',{}).get('removals',[]):
             key = normalize(entry['tag'])
             if entry['cutoff_annotation_id'] > cutoffs.get(key,0):
@@ -32,7 +34,8 @@ def effective_evidence(db, image_id, read_set):
     for row in rows:
         for tag in row.content:
             key = normalize(tag.tag)
-            origins = row.params_json.get('merge_meta',{}).get('tag_origins',{}).get(key,[{'layer':row.source,'annotation_id':row.annotation_id,'conf':tag.conf}])
+            meta = row.params_json.get('merge_meta',{}) if row.source in ('manual','rule') else {}
+            origins = meta.get('tag_origins',{}).get(key,[{'layer':row.source,'annotation_id':row.annotation_id,'conf':tag.conf}])
             valid = [dict(o) for o in origins if o['annotation_id'] > cutoffs.get(key,0)]
             if valid:
                 output = evidence.setdefault(key,[])

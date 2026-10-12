@@ -59,7 +59,13 @@ class ReadSession:
     def execute(self, sql: str, parameters: tuple | list = ()) -> sqlite3.Cursor:
         if not self._active or self._thread != threading.get_ident():
             raise WrongThread('Session expired or used from another thread')
-        return self._connection.execute(sql, parameters)
+        try:
+            return self._connection.execute(sql, parameters)
+        except sqlite3.Error as exc:
+            if isinstance(self,WriteSession):
+                # Writer errors are mapped at the transaction boundary.
+                raise
+            raise translate(exc) from exc
 
 
 class WriteSession(ReadSession):
@@ -81,6 +87,8 @@ class WriterQueue:
         self._poisoned = False
         self._ready: Future = Future()
         self.cycles: dict[int, tuple[str, bool]] = {}
+        self.job_runs: dict[int, str] = {}
+        self.receipt_cleanup_failures: set[int] = set()
         self.report = None
         self._thread = threading.Thread(target=self._run, name='stylelora-db', daemon=True)
         self._thread.start()
@@ -111,6 +119,7 @@ class WriterQueue:
         with self._readers:
             self._readers.wait_for(lambda: self._reader_count == 0)
         self.cycles.clear()
+        self.job_runs.clear()
         try:
             self._connection.execute('PRAGMA wal_checkpoint(TRUNCATE)')
         finally:
@@ -185,6 +194,8 @@ def read_snapshot(project: ProjectHandle) -> Iterator[ReadSession]:
         connection.execute('SELECT count(*) FROM sqlite_schema').fetchone()
         session = ReadSession(connection, project.root)
         yield session
+    except sqlite3.Error as exc:
+        raise translate(exc) from exc
     finally:
         if session:
             session._active = False

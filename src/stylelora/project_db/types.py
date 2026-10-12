@@ -193,6 +193,7 @@ class JobOutcome:
     annotations: tuple[AnnotationInput, ...] = ()
     reason: str | None = None
     annotation_ids: tuple[int, ...] = ()
+    run_token: str | None = None
 
 
 @dataclass(frozen=True)
@@ -236,6 +237,7 @@ class RecoveryReport:
     unresolved_item_ids: tuple[int, ...] = ()
     missing_image_ids: tuple[int, ...] = ()
     orphan_filenames: tuple[str, ...] = ()
+    receipt_cleanup_failures: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)

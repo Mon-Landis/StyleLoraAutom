@@ -77,7 +77,7 @@ class ProjectCase(unittest.TestCase):
             values.append(AnnotationInput(image.image_id,'wd' if job.executor=='wd' else 'llm',kind,
                           (Tag(tag,0.8),) if kind=='tags' else tag,model_name='test-model',
                           params={'schema_version':1,'requested':{},'actual':{'setting':1}},job_id=job.job_id,cache_key=key+'-'+kind))
-        return JobOutcome(image.image_id,'done',tuple(values))
+        return JobOutcome(image.image_id,'done',tuple(values),run_token=self.project.writer.job_runs[job.job_id])
 
     def refs(self, image_id):
         def read(db):

@@ -95,7 +95,7 @@ class AdditionalTests(ProjectCase):
 
     def test_stale_session_and_readonly(self):
         with read_snapshot(self.project) as db:
-            with self.assertRaises(sqlite3.OperationalError):
+            with self.assertRaises(StorageError):
                 db.execute("UPDATE sources SET name='bad'")
         with self.assertRaises(WrongThread):
             db.execute('SELECT 1')

@@ -112,7 +112,7 @@ def register_artifact(db, artifact, originals):
                 raise ArtifactConflict('Original annotations differ')
         if db.execute("SELECT count(*) FROM annotations WHERE image_id=? AND source='original' AND is_current=1",(image.image_id,)).fetchone()[0] != len(originals):
             raise ArtifactConflict('Original annotation set differs')
-        db.after_commit.append(lambda: receipt_path(db.root,item.item_id,item.attempts).unlink(missing_ok=True))
+        db.after_commit.append(lambda: cleanup_receipt(db,item))
         return WriteResult(image,False)
     if item.status != 'sent':
         raise ArtifactConflict('Artifact needs a sent item')
@@ -134,6 +134,13 @@ def register_artifact(db, artifact, originals):
             # image, even if its bytes happen to match the receipt's fingerprint.
             previous_file = None
     source_path = previous_file if previous_file and file_matches(previous_file,artifact) else staging
+    if not file_matches(source_path,artifact) and receipt.get('previous_path'):
+        old = relative_path(db.root,receipt['previous_path'])
+        if old.parent != (db.root/'images') and old != staging:
+            raise ArtifactConflict('Invalid migration source')
+        if old.parent == db.root/'images' and db.execute('SELECT 1 FROM images WHERE filename=?',(old.name,)).fetchone():
+            raise ArtifactConflict('Migration source is occupied')
+        source_path = old
     if not file_matches(source_path,artifact):
         raise ArtifactConflict('No complete artifact matching receipt')
     identity = db.execute('SELECT coalesce(max(image_id),0)+1 FROM images').fetchone()[0]
@@ -146,6 +153,9 @@ def register_artifact(db, artifact, originals):
             break
         identity += 1
     receipt.update(candidate_id=identity,filename=target.name)
+    receipt['phase'] = 'moving'
+    if source_path != target:
+        receipt['previous_path'] = source_path.relative_to(db.root).as_posix()
     atomic_json(receipt_path(db.root,item.item_id,item.attempts),receipt)
     if source_path != target:
         # Windows rename fails if destination exists. Other OSes use link/unlink
@@ -155,6 +165,8 @@ def register_artifact(db, artifact, originals):
         else:
             os.link(source_path,target)
             source_path.unlink()
+    receipt['phase'] = 'published'
+    atomic_json(receipt_path(db.root,item.item_id,item.attempts),receipt)
     db.execute('INSERT INTO images(image_id,filename,width,height,phash,sha256,file_size,source_id,png_meta_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
                (identity,target.name,artifact.width,artifact.height,artifact.phash,artifact.sha256,artifact.file_size,item.source_id,
                 dumps(artifact.png_meta) if artifact.png_meta is not None else None,now()))
@@ -165,10 +177,15 @@ def register_artifact(db, artifact, originals):
     cas(db,'source_items',item.item_id,{'status':'done','image_id':identity,'error':None,'updated_at':now()}, {'status':'sent','attempts':artifact.attempt})
     # Cleanup is best effort: committed outcome must not appear failed because an
     # antivirus temporarily holds the receipt. Recovery can clean it next open.
-    def cleanup():
-        try:
-            receipt_path(db.root,item.item_id,item.attempts).unlink(missing_ok=True)
-        except OSError:
-            pass
-    db.after_commit.append(cleanup)
+    db.after_commit.append(lambda: cleanup_receipt(db,item))
     return WriteResult(images.get_image(db,identity),True)
+
+
+def cleanup_receipt(db, item):
+    try:
+        receipt_path(db.root,item.item_id,item.attempts).unlink(missing_ok=True)
+        if db.writer:
+            db.writer.receipt_cleanup_failures.discard(item.item_id)
+    except OSError:
+        if db.writer:
+            db.writer.receipt_cleanup_failures.add(item.item_id)

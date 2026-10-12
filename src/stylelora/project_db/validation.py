@@ -43,6 +43,19 @@ def choice(value: str, values: tuple[str, ...]) -> None:
         raise ValidationError('Unsupported enum value')
 
 
+def error_reason(value: str) -> None:
+    """Symbolic code, optionally followed by a caller-sanitized short explanation.
+
+    Reject unsafe input rather than storing raw responses or silently altering
+    idempotency evidence. This contract is shared by item and job failures.
+    """
+    text(value,nonempty=True)
+    if len(value)>200 or not re.fullmatch(r'[a-z][a-z0-9_]{0,47}(?::[A-Za-z0-9_ .-]{1,151})?',value):
+        raise ValidationError('Sanitized error code and short reason required')
+    if re.search(r'(?i)(https?\b|www\.|\b(?:sk|ghp|github_pat|AKIA)[_-]|bearer|api[_ -]?key|secret|password|token|[A-Za-z0-9_-]{32,})',value):
+        raise ValidationError('Sensitive error reason prohibited')
+
+
 def confidence(value: float | None) -> None:
     if value is not None and (type(value) not in (float, int) or not math.isfinite(value) or not 0 <= value <= 1):
         raise ValidationError('Invalid confidence')

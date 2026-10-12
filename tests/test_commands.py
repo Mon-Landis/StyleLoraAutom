@@ -6,6 +6,13 @@ from stylelora.project_db.errors import *
 from stylelora.project_db.validation import now
 from stylelora.project_db.repositories import schemes
 
+# Independent transcription of F01 §5.1 and §5.3; special command edges below.
+SOURCE_TRANSITIONS = {('running','paused'),('paused','running'),('running','done'),
+                      ('running','canceled'),('paused','canceled'),('paused','done'),('draft','canceled')}
+JOB_TRANSITIONS = {('running','paused'),('paused','running'),('running','done'),
+                   ('running','failed'),('running','canceled'),('pending','canceled'),
+                   ('paused','canceled'),('pending','failed'),('paused','done'),('paused','failed')}
+
 
 class CommandTests(ProjectCase):
     def test_S01_source_and_job_edge_tables(self):
@@ -20,7 +27,7 @@ class CommandTests(ProjectCase):
                            (before,int(locked),'t' if locked else None,'t' if before in ('done','canceled') else None,source.source_id))
                 db.execute("INSERT INTO source_items(source_id,seq,prompt,status,attempts,error,updated_at) VALUES(?,1,'p','failed',1,'failure','t')",(source.source_id,))
                 with self.subTest(machine='source',before=before,after=after):
-                    if before==after or (before,after) in cmd.SOURCE_EDGES:
+                    if before==after or (before,after) in SOURCE_TRANSITIONS:
                         cmd.transition_source(db,source.source_id,expected=before,target=after,reason='test')
                     else:
                         with self.assertRaises(StateConflict):
@@ -33,7 +40,7 @@ class CommandTests(ProjectCase):
                 db.execute('UPDATE jobs SET status=?,started_at=?,finished_at=? WHERE job_id=?',
                            (before,None if before=='pending' else 't','t' if before in ('done','failed','canceled') else None,job.job_id))
                 with self.subTest(machine='job',before=before,after=after):
-                    if before==after or (before,after) in cmd.JOB_EDGES:
+                    if before==after or (before,after) in JOB_TRANSITIONS:
                         cmd.transition_job(db,job.job_id,expected=before,target=after)
                     else:
                         with self.assertRaises(StateConflict):
@@ -125,7 +132,7 @@ class CommandTests(ProjectCase):
         self.assertEqual(self.count('annotations'),2)
         self.write(lambda db: cmd.transition_job(db,job.job_id,expected='running',target='done'))
         failed = self.job((image.image_id,))
-        self.write(lambda db: cmd.commit_job_outcome(db,failed.job_id,JobOutcome(image.image_id,'failed',reason='bad_image')))
+        self.write(lambda db: cmd.commit_job_outcome(db,failed.job_id,JobOutcome(image.image_id,'failed',reason='bad_image',run_token=self.project.writer.job_runs[failed.job_id])))
         result = self.write(lambda db: cmd.transition_job(db,failed.job_id,expected='running',target='done')).value
         self.assertEqual((result.status,result.failed_count),('done',1))
 
@@ -188,7 +195,7 @@ class CommandTests(ProjectCase):
         image = self.image()
         for kind in ('done','failed','skipped'):
             job = self.job((image.image_id,))
-            outcome = self.outcome(job,image) if kind=='done' else JobOutcome(image.image_id,kind,reason='test')
+            outcome = self.outcome(job,image) if kind=='done' else JobOutcome(image.image_id,kind,reason='test',run_token=self.project.writer.job_runs[job.job_id])
             self.write(lambda db: cmd.commit_job_outcome(db,job.job_id,outcome))
             self.reopen()
             self.assertFalse(self.write(lambda db: cmd.commit_job_outcome(db,job.job_id,outcome)).changed)

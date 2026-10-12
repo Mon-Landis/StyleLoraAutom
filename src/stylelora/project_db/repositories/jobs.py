@@ -6,6 +6,21 @@ from ..types import JobRow, JobRequest, JobSnapshot, PageRequest, WriteResult
 from ..validation import choice, dumps, integer, now, safe_snapshot, scope_json, text
 from .common import get, page as paginate, row, cas
 from .images import get_image
+from uuid import uuid4
+
+
+def begin_run(db, job_id):
+    if db.writer is None:
+        raise StateConflict('Job scheduling requires writer queue')
+    token = uuid4().hex
+    db.after_commit.append(lambda: db.writer.job_runs.__setitem__(job_id,token))
+
+
+def get_run_token(db: WriteSession, job_id: int) -> str:
+    """Capture at dispatch; workers must return this token with their outcome."""
+    if get_job(db,job_id).status != 'running' or db.writer is None or job_id not in db.writer.job_runs:
+        raise StateConflict('No active job run')
+    return db.writer.job_runs[job_id]
 
 
 def get_job(db: ReadSession, job_id: int) -> JobRow:
@@ -55,6 +70,15 @@ def freeze_job(db: WriteSession, job_id: int, snapshot: JobSnapshot, *, image_id
     integer(snapshot['retries'])
     integer(snapshot['timeout'],1)
     ids = list(image_ids)
+    allowed = snapshot.get('allowed_cache_keys',{})
+    if not isinstance(allowed,dict):
+        raise ValidationError('Invalid allowed cache keys')
+    for image, layers in allowed.items():
+        if image not in {str(i) for i in ids} or not isinstance(layers,dict) or set(layers) != set(targets):
+            raise ValidationError('Cache keys must match frozen scope and layers')
+        for keys in layers.values():
+            if not isinstance(keys,list) or not keys or any(not isinstance(k,str) or not k for k in keys):
+                raise ValidationError('Nonempty cache keys required')
     if len(set(ids)) != len(ids):
         raise ValidationError('Duplicate frozen image')
     for identity in ids:
@@ -69,4 +93,5 @@ def freeze_job(db: WriteSession, job_id: int, snapshot: JobSnapshot, *, image_id
     clock = now()
     cas(db,'jobs',job_id,{'status':'running','started_at':clock,'updated_at':clock,'total':len(ids),
                         'config_snapshot_json':dumps(snapshot),'progress_json':dumps({'schema_version':1,'image_ids':ids,'outcomes':{}})}, {'status':'pending'})
+    begin_run(db,job_id)
     return WriteResult(get_job(db,job_id),True)

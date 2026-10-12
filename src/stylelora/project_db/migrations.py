@@ -95,6 +95,30 @@ def verify_integrity(db: ReadSession, *, full: bool = False) -> tuple[str, ...]:
             errors.append('Missing export scheme')
         from .repositories.operations import audit_references
         errors.extend(audit_references(db))
+        with closing(sqlite3.connect(':memory:')) as reference:
+            reference.executescript((Path(__file__).parent/'migrations'/'0001_initial.sql').read_text(encoding='utf-8'))
+            for table in expected_tables:
+                for pragma in ('table_info','foreign_key_list'):
+                    query = f'PRAGMA {pragma}({table})'
+                    if [tuple(r) for r in db.execute(query)] != reference.execute(query).fetchall():
+                        errors.append(f'Unexpected {pragma}: {table}')
+                def index_structure(connection):
+                    result = {}
+                    for entry in connection.execute(f'PRAGMA index_list({table})'):
+                        name = entry[1]
+                        quoted = name.replace('"','""')
+                        result[name] = (tuple(entry)[2:],tuple(tuple(r) for r in connection.execute(f'PRAGMA index_xinfo("{quoted}")')))
+                    return result
+                if index_structure(db) != index_structure(reference):
+                    errors.append(f'Unexpected index structure: {table}')
+            # SQL includes index name, ordered columns, uniqueness and predicate.
+            # Tokenize without changing quoted literals (whitespace inside strings matters).
+            import re
+            def indexes(connection):
+                return {r[0]: tuple(re.findall(r"'[^']*(?:''[^']*)*'|\"[^\"]*\"|\w+|[^\s]",r[1]))
+                        for r in connection.execute("SELECT name,sql FROM sqlite_schema WHERE type='index' AND sql IS NOT NULL")}
+            if indexes(db) != indexes(reference):
+                errors.append('Unexpected index definitions')
     return tuple(errors)
 
 
