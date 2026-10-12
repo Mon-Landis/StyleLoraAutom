@@ -59,15 +59,10 @@ def image_info(path):
         meta = {'schema_version':1,'text':dict(image.text)} if image.format == 'PNG' and getattr(image,'text',None) else None
         # Decode every animation frame, retaining the first frame for fingerprinting.
         image.load()
-        pixels = list(image.convert('L').resize((32,32),Image.Resampling.LANCZOS).getdata())
         for frame in ImageSequence.Iterator(image):
             frame.load()
-    cosine = [[math.cos((2*x+1)*u*math.pi/64) for x in range(32)] for u in range(8)]
-    horizontal = [[sum(pixels[y*32+x]*cosine[u][x] for x in range(32)) for y in range(32)] for u in range(8)]
-    coefficients = [sum(horizontal[u][y]*cosine[v][y] for y in range(32)) for v in range(8) for u in range(8)]
-    median = statistics.median(coefficients[1:])
-    fingerprint = sum((value>median) << (63-i) for i,value in enumerate(coefficients))
-    return width,height,f'{fingerprint:016x}',meta
+    from stylelora.vision.phash import compute_phash
+    return width,height,compute_phash(path),meta
 
 
 class ImportService:

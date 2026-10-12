@@ -229,7 +229,13 @@ def commit_job_outcome(db: WriteSession, job_id: int, outcome: JobOutcome) -> Wr
         if sorted(a.type for a in outcome.annotations) != sorted(targets):
             raise ValidationError('All target layers must commit together')
         for value in outcome.annotations:
-            if value.image_id != outcome.image_id or value.job_id != job_id or value.source != ('wd' if job.executor == 'wd' else 'llm') or value.model_name != job.config_snapshot_json['model']:
+            frozen_models = {job.config_snapshot_json['model']}
+            if job.executor == 'llm_vision':
+                role = value.params.get('actual', {}).get('role')
+                binding = job.config_snapshot_json.get('roles', {}).get(role, {}) if role in ('vision', 'vision_nsfw') else {}
+                if binding.get('protocol') == value.params.get('actual', {}).get('protocol') and binding.get('model'):
+                    frozen_models.add(binding['model'])
+            if value.image_id != outcome.image_id or value.job_id != job_id or value.source != ('wd' if job.executor == 'wd' else 'llm') or value.model_name not in frozen_models:
                 raise ValidationError('Result does not match frozen job')
             current = annotations.get_current(db,value.image_id,value.source,value.type)
             with authority(db,'job'):

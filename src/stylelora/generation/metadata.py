@@ -72,4 +72,10 @@ def inspect_png(path, *, style_prompt, sent_prompt, metadata_stripped=None, expe
                 if (actual - sent) & QUALITY_TAGS:
                     reasons.append('meta:unexpected_quality_tags')
                 validation = 'mismatch' if reasons else 'pass'
-    return ArtifactInspection(width, height, size, sha, None, meta, validation, tuple(reasons))
+    from stylelora.vision.phash import compute_phash
+    try:
+        phash = compute_phash(path)
+    except (OSError, ValueError):
+        phash = None
+        reasons.append('phash_unavailable')
+    return ArtifactInspection(width, height, size, sha, phash, meta, validation, tuple(reasons))
