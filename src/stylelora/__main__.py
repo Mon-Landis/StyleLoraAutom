@@ -13,6 +13,22 @@ from stylelora.runtime.contracts import Failure
 from stylelora.llm.secrets import SecretStore
 
 
+def _quiet_client_resets(loop):
+    """Suppress the Windows Proactor traceback logged when a browser drops a
+    keep-alive/SSE connection (WinError 10054). Other loop errors still log."""
+    default = loop.get_exception_handler()
+
+    def handler(lp, context):
+        exc = context.get('exception')
+        if isinstance(exc, (ConnectionResetError, ConnectionAbortedError)):
+            return
+        if default is not None:
+            default(lp, context)
+        else:
+            lp.default_exception_handler(context)
+    loop.set_exception_handler(handler)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog='stylelora')
     sub = parser.add_subparsers(dest='command', required=True)
@@ -38,9 +54,11 @@ def main(argv=None):
                      secret_store=SecretStore())
         app = create_app(rt)
         server = uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', port=sock.getsockname()[1],
-                                workers=1, proxy_headers=False, access_log=False))
+                                workers=1, proxy_headers=False, access_log=False,
+                                use_colors=False))
         rt.shutdown_callback = lambda: setattr(server, 'should_exit', True)
         async def run():
+            _quiet_client_resets(asyncio.get_running_loop())
             try:
                 if args.project:
                     await rt.open(args.project.absolute())
