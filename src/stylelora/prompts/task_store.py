@@ -28,7 +28,8 @@ class TaskStore:
         except FileNotFoundError: raise PromptError('task:not_found') from None
         except (OSError,PromptError): raise PromptError('storage:corrupt_snapshot') from None
         require(isinstance(data,dict) and set(data)==FIELDS and type(data['schema_version']) is int and data['schema_version']==1,'storage:corrupt_snapshot')
-        require(isinstance(data['snapshot'],dict) and set(data['snapshot'])==SNAPSHOT_FIELDS,'storage:corrupt_snapshot')
+        require(isinstance(data['snapshot'],dict) and set(data['snapshot']) in
+                (SNAPSHOT_FIELDS, SNAPSHOT_FIELDS | {'profile', 'formatter'}),'storage:corrupt_snapshot')
         require(digest(data['snapshot'])==data['snapshot_digest'],'storage:corrupt_snapshot')
         require(data['task_id']==task_id and digest(data['snapshot']['input'])==data['request_digest'],'storage:corrupt_snapshot')
         snapshot=data['snapshot']
@@ -44,7 +45,12 @@ class TaskStore:
         for entry,rating,dimensions in zip(snapshot['candidates'],snapshot['candidate_ratings'],snapshot['candidate_dimensions']):
             construct(PromptEntry,entry); construct(RatingDecision,rating); CompositionRequest(dimensions)
         for i,row in enumerate(data['outcomes']):
-            require(set(row)=={'outcome','generation','dispatch_revision'},'storage:corrupt_snapshot')
+            require(set(row) in ({'outcome','generation','dispatch_revision'},
+                                {'outcome','generation','dispatch_revision','format_result'}),'storage:corrupt_snapshot')
+            if row.get('format_result') is not None:
+                formatted = row['format_result']
+                require(set(formatted) == {'entry','formatter_id','formatter_version','input_digest','output_digest'}, 'storage:corrupt_snapshot')
+                require(digest(formatted['entry']) == formatted['output_digest'] and formatted['entry'] == row['outcome']['entry'], 'storage:corrupt_snapshot')
             outcome=dict(row['outcome'])
             if outcome['entry'] is not None: outcome['entry']=construct(PromptEntry,outcome['entry'])
             dto=construct(TaskOutcome,outcome)
@@ -99,7 +105,7 @@ class TaskStore:
             row['outcome']['status']='running'; row['generation']=data['generation']; row['dispatch_revision']=data['revision']+1
             return self.write(data,expected_revision=data['revision'])
 
-    def commit_outcome(self, outcome, *, generation, dispatch_revision):
+    def commit_outcome(self, outcome, *, generation, dispatch_revision, format_result=None):
         with LOCK:
             data=self.read(outcome.task_id); row=data['outcomes'][outcome.index]
             if row['outcome']['status'] in ('ok','skipped','failed'): return data
@@ -107,6 +113,8 @@ class TaskStore:
             require(data['status'] in ('running','paused') and row['outcome']['status']=='running' and row['dispatch_revision']==dispatch_revision,'seeds:state_conflict')
             require(outcome.status in ('ok','skipped','failed'))
             row['outcome']=plain(outcome)
+            if format_result is not None and outcome.entry is not None:
+                row['format_result'] = plain(format_result)
             return self.write(data,expected_revision=data['revision'])
 
     def recover(self):

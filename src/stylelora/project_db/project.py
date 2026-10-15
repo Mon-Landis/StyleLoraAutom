@@ -1,5 +1,5 @@
 """Project directory publication, exclusive OS lock, lifecycle and metadata."""
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import json
 import os
 from pathlib import Path
@@ -63,7 +63,9 @@ def _root(root: Path) -> Path:
     return root.resolve()
 
 
-def create_project(root: Path, *, name: str, trigger_word: str) -> ProjectHandle:
+def create_project(root: Path, *, name: str, trigger_word: str, mode: str = 'style') -> ProjectHandle:
+    from stylelora.modes.profiles import get_profile
+    get_profile(mode)
     root = _root(root)
     text(name,nonempty=True)
     text(trigger_word)
@@ -76,7 +78,7 @@ def create_project(root: Path, *, name: str, trigger_word: str) -> ProjectHandle
         try:
             for directory in ('images','cache','exports'):
                 (temporary/directory).mkdir()
-            metadata = ProjectMetadata(1,name,trigger_word,now())
+            metadata = ProjectMetadata(migrations.CURRENT_VERSION,name,trigger_word,now(),mode)
             migrations.atomic_json(temporary/'project.json',asdict(metadata))
             connection = sqlite3.connect(temporary/'project.db',isolation_level=None)
             connection.row_factory = sqlite3.Row
@@ -114,7 +116,17 @@ def open_project(root: Path, *, migrate: bool = True) -> ProjectHandle:
         lock.__enter__()
         writer = None
         try:
-            metadata = ProjectMetadata(**json.loads((root/'project.json').read_text(encoding='utf-8')))
+            raw = json.loads((root/'project.json').read_text(encoding='utf-8'))
+            if type(raw.get('format_version')) is not int:
+                raise VersionMismatch('Invalid format version')
+            if raw['format_version'] > migrations.CURRENT_VERSION:
+                from .errors import NewerProject
+                raise NewerProject('Newer project version')
+            if raw['format_version'] >= 2 and 'mode' not in raw:
+                raise Corrupt('Missing project mode')
+            from stylelora.modes.profiles import get_profile
+            get_profile(raw.get('mode', 'style'))
+            metadata = ProjectMetadata(**raw)
             if type(metadata.format_version) is not int:
                 raise VersionMismatch('Invalid format version')
             text(metadata.name,nonempty=True)
@@ -135,7 +147,7 @@ def open_project(root: Path, *, migrate: bool = True) -> ProjectHandle:
                     raise VersionMismatch('Migration recovery required')
             finally:
                 connection.close()
-            if marker or version != migrations.CURRENT_VERSION:
+            if marker or version != migrations.CURRENT_VERSION or metadata.format_version != migrations.CURRENT_VERSION:
                 metadata = migrations.migrate_locked(root,target_version=migrations.CURRENT_VERSION)
             connection = connect(root/'project.db',readonly=True)
             try:
@@ -173,7 +185,7 @@ def update_metadata(project: ProjectHandle, *, name: str, trigger_word: str) -> 
     with _guard:
         if project.root not in _open:
             raise ProjectLocked('Project not open')
-        metadata = ProjectMetadata(project.schema_version,name,trigger_word,project.metadata.created_at)
+        metadata = replace(project.metadata,name=name,trigger_word=trigger_word)
         migrations.atomic_json(project.root/'project.json',asdict(metadata))
         object.__setattr__(project,'metadata',metadata)
         return metadata

@@ -193,7 +193,14 @@ class Resources:
                     if runner.task:
                         await asyncio.shield(runner.task)
                 return self.rt.supervisor.submit('source', work, project_id=ctx.project_id)
-            await (runner.pause() if value['action'] == 'pause' else runner.stop())
+            if value['action'] == 'cancel':
+                from .tasks import ResourceRef, ProjectRef
+                from .task_adapters import DomainAdapter
+                identity_task = self.rt.tasks.register(DomainAdapter(self.rt, 'source', ctx),
+                    ResourceRef('source', str(identity)), ProjectRef(ctx.project_id, ctx.handle.metadata.name))
+                await self.rt.tasks.cancel(identity_task, 'source-cancel:'+expected)
+            else:
+                await runner.pause()
             return await self.rt.blocking(lambda: self.get(ctx, 'sources', identity))
 
     def annotation(self, ctx, identity):
@@ -319,9 +326,17 @@ class Resources:
             check(expected, self.token(ctx, 'jobs', row))
             if value['action'] == 'resume' and row.executor not in self.rt.executors:
                 raise Failure(503, 'dependency:unavailable')
-            return commands.transition_job(db, identity, expected=row.status,
-                target={'pause':'paused', 'resume':'running', 'cancel':'canceled'}[value['action']]).value
-        row = await asyncio.wrap_future(submit_write(ctx.handle, control))
+            return row
+        await asyncio.wrap_future(submit_write(ctx.handle, control))
+        if value['action'] == 'cancel':
+            from .tasks import ResourceRef, ProjectRef
+            from .task_adapters import DomainAdapter
+            identity_task = self.rt.tasks.register(DomainAdapter(self.rt, 'job', ctx),
+                ResourceRef('job', str(identity)), ProjectRef(ctx.project_id, ctx.handle.metadata.name))
+            await self.rt.tasks.cancel(identity_task, 'job-cancel:'+expected)
+            row = self.job_runner(ctx).get(identity)
+        else:
+            row = await self.job_runner(ctx).control(identity, value['action'])
         if value['action'] == 'resume':
             self.rt.supervisor.submit('job', lambda: self.job_runner(ctx).run(identity), project_id=ctx.project_id)
         return self.view(ctx, 'jobs', row)

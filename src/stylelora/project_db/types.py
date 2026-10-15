@@ -33,6 +33,7 @@ class ProjectMetadata:
     name: str
     trigger_word: str
     created_at: str
+    mode: str = 'style'
 
 
 @dataclass(frozen=True)

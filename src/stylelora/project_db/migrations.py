@@ -15,7 +15,7 @@ from .errors import MigrationFailed, MigrationRecoveryRequired, NewerProject, Ve
 from .types import MigrationInfo, ProjectMetadata
 from .validation import dumps, relative_path
 
-CURRENT_VERSION = 1
+CURRENT_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -25,7 +25,9 @@ class Migration:
 
 
 # Version 0 is unpublished initialization, never an accepted old project.
-REGISTRY: tuple[Migration, ...] = ()
+REGISTRY: tuple[Migration, ...] = (
+    Migration(MigrationInfo(1, 2, 'project-mode', hashlib.sha256(b'project-mode-v2:default-style;no-schema-change').hexdigest()), lambda db: None),
+)
 
 
 def atomic_json(path: Path, value: object) -> None:
@@ -46,7 +48,7 @@ def initialize(connection: sqlite3.Connection) -> None:
                 connection.execute(statement)
         from .repositories.schemes import initialize_defaults
         initialize_defaults(WriteSession(connection, Path('.')))
-        connection.execute('PRAGMA user_version=1')
+        connection.execute(f'PRAGMA user_version={CURRENT_VERSION}')
         connection.commit()
     except BaseException:
         connection.rollback()
@@ -138,7 +140,17 @@ def migrate_locked(root: Path, *, target_version: int) -> ProjectMetadata:
         raise VersionMismatch('Only current target supported')
     meta_path = root / 'project.json'
     marker = root / '.migration-state.json'
-    metadata = ProjectMetadata(**json.loads(meta_path.read_text(encoding='utf-8')))
+    raw = json.loads(meta_path.read_text(encoding='utf-8'))
+    if type(raw.get('format_version')) is not int:
+        raise VersionMismatch('Invalid format version')
+    if raw['format_version'] > CURRENT_VERSION:
+        raise NewerProject('Project requires a newer application')
+    if raw['format_version'] >= 2 and 'mode' not in raw:
+        from .errors import Corrupt
+        raise Corrupt('Missing project mode')
+    from stylelora.modes.profiles import get_profile
+    get_profile(raw.get('mode', 'style'))
+    metadata = ProjectMetadata(**raw)
     connection = sqlite3.connect((root / 'project.db').as_uri() + '?mode=rw', uri=True, isolation_level=None)
     connection.row_factory = sqlite3.Row
     try:
@@ -155,7 +167,7 @@ def migrate_locked(root: Path, *, target_version: int) -> ProjectMetadata:
             if not (backup / 'project.db').is_file() or _hash(backup / 'project.json') != state['old_hash']:
                 raise MigrationRecoveryRequired('Incomplete migration backup')
             old_metadata = json.loads((backup/'project.json').read_text(encoding='utf-8'))
-            target_metadata = {**old_metadata,'format_version':target_version}
+            target_metadata = {**old_metadata,'mode':old_metadata.get('mode','style'),'format_version':target_version}
             if state['metadata'] != target_metadata or hashlib.sha256(dumps(target_metadata).encode()).hexdigest() != state['new_hash']:
                 raise MigrationRecoveryRequired('Target metadata does not match trusted transition')
             if _hash(meta_path) not in (state['old_hash'], state['new_hash']):

@@ -3,7 +3,7 @@ import asyncio
 import platform
 from dataclasses import replace
 from uuid import uuid4
-from stylelora.llm.types import LlmFailure
+from stylelora.llm.types import LlmFailure, CancelToken
 from stylelora.tagging.catalog import LocalCatalog
 from .types import *
 from .validation import require, plain, construct, skill_text, validate_content, tag_key
@@ -14,6 +14,8 @@ from .routing import resolve_rating, classify_rating, fenced
 from .seeds import freeze_entries
 from .task_store import TaskStore
 from .dictionaries import load_dictionary, append_entries, digest
+from stylelora.modes.profiles import get_profile, freeze_profile, profile_from_snapshot, ProfileError
+from .formatters import apply_formatter, FormatContext
 
 
 def request_from(data):
@@ -39,9 +41,12 @@ class TaskService:
         self.root=root; self.store=TaskStore(root); self.llm=llm; self.catalog=catalog or LocalCatalog()
         self.keywords=dict(keywords or {}); self.templates=templates or {'sfw':skill_text()}; self.launcher=launcher
         self._bindings={}; self._running=set()
+        self.request_tokens = {}
         self._gate=asyncio.Semaphore(2)
 
-    async def create_task(self, request, *, request_key, dictionaries=None, features=None):
+    async def create_task(self, request, *, request_key, dictionaries=None, features=None, mode_context=None):
+        from stylelora.modes.profiles import resolve_profile
+        profile = resolve_profile(mode_context.profile) if mode_context is not None else get_profile()
         require(isinstance(request,SamplingRequest) and isinstance(request_key,str) and bool(request_key))
         # Request replay is checked before dictionary/model access: saved results stand alone.
         input_value=plain(request)
@@ -76,6 +81,7 @@ class TaskService:
             for tag,category in sorted(self.catalog.entries.items())]} if self.catalog.available else None
         ordered=result.entries+tuple(e for e in result.candidates if tag_key(e) not in {tag_key(x) for x in result.entries})
         snapshot={'input':input_value,'python_version':platform.python_version(),'algorithm_version':request.plan.algorithm_version,
+            'profile':plain(freeze_profile(profile)), 'formatter':{'id':'identity','version':'1'},
             'dictionaries':[plain(d) for d in dictionaries],'features':plain(features),'candidates':plain(ordered),
             'candidate_ratings':[plain(result.ratings[tag_key(e)]) for e in ordered],
             'candidate_dimensions':[plain(result.dimensions[tag_key(e)]) for e in ordered],
@@ -93,12 +99,13 @@ class TaskService:
         require(action in ('pause','resume','cancel'))
         with self.store.lock:
             data=self.store.read(task_id); require(data['revision']==expected_revision,'seeds:state_conflict')
-            target={'pause':'paused','resume':'running','cancel':'canceled'}[action]
+            target={'pause':'paused','resume':'running','cancel':'paused'}[action]
             if data['status']==target: return view(data)
             require(data['status'] not in ('done','failed','canceled'),'seeds:state_conflict')
-            if action=='resume': require(data['status']=='paused','seeds:state_conflict')
+            if action=='resume':
+                require(data['status']=='paused','seeds:state_conflict')
+                require(not any(r['outcome']['reason_code']=='llm:outcome_unknown' for r in data['outcomes']), 'task:reconciliation_required')
             data['status']=target
-            if action=='cancel': data['generation']+=1; data['ready']=False
             return view(self.store.write(data,expected_revision=expected_revision))
 
     async def _restore_bindings(self,data):
@@ -127,6 +134,11 @@ class TaskService:
         except LlmFailure:
             data['status']='paused'; return view(self.store.write(data,expected_revision=data['revision']))
         snapshot=data['snapshot']; request=request_from(snapshot['input'])
+        try:
+            profile = profile_from_snapshot(snapshot)
+        except ProfileError:
+            data['status']='paused'
+            return view(self.store.write(data,expected_revision=data['revision']))
         catalog=LocalCatalog(snapshot['catalog'],snapshot['catalog_translations'],complete=snapshot['catalog_complete'])
         candidates=tuple(construct(PromptEntry,e) for e in snapshot['candidates'])
         if data['status']=='pending':
@@ -142,15 +154,21 @@ class TaskService:
             if data['outcomes'][index]['outcome']['status']!='pending': continue
             data=self.store.dispatch(task_id,index); row=data['outcomes'][index]; generation=row['generation']; dispatched=row['dispatch_revision']
             entry=candidates[index]
+            formatted = None
+            token = CancelToken()
+            self.request_tokens.setdefault(task_id, []).append(token)
             try:
                 rating=construct(RatingDecision,snapshot['candidate_ratings'][index])
                 if rating.rating is None and request.fence.use_rating_model and self.llm and bindings['rating'] is not None:
-                    rating=await resolve_rating(entry,request.fence,self.llm,keywords=snapshot['keywords'],binding=bindings['rating'])
+                    rating=await resolve_rating(entry,request.fence,self.llm,keywords=snapshot['keywords'],binding=bindings['rating'],cancel=token)
                 opts=request.options
                 composition=CompositionRequest(snapshot['candidate_dimensions'][index],nl_enabled=opts.nl_enabled,composition_mode=opts.composition_mode,tag_range=opts.tag_range,aspect_hint=entry.aspect or opts.aspect_hint)
                 outcome=await refine(entry,composition,task_id=task_id,index=index,rating=rating,llm=self.llm,policy=request.fence,
-                    optimize=request.optimize,catalog=catalog,keywords=snapshot['keywords'],templates=snapshot['templates'],bindings=bindings)
+                    optimize=request.optimize,catalog=catalog,keywords=snapshot['keywords'],templates=snapshot['templates'],bindings=bindings,cancel=token,profile=profile)
                 if outcome.entry is not None and outcome.status in ('ok','skipped'):
+                    formatted = apply_formatter(outcome.entry, context=FormatContext(
+                        freeze_profile(profile), {}, digest(snapshot)))
+                    outcome = replace(outcome, entry=formatted.entry)
                     validate_content(outcome.entry,catalog=catalog)
                     if request.coverage_enabled and classify(request.plan,entry)!=classify(request.plan,outcome.entry):
                         outcome=TaskOutcome(task_id,index,'failed','sampling:coverage_drift')
@@ -159,7 +177,9 @@ class TaskService:
             except LlmFailure as exc:
                 outcome=TaskOutcome(task_id,index,'failed','llm:outcome_unknown' if exc.outcome=='unknown' else exc.code)
             except PromptError as exc: outcome=TaskOutcome(task_id,index,'failed',exc.code)
-            data=self.store.commit_outcome(outcome,generation=generation,dispatch_revision=dispatched)
+            finally:
+                self.request_tokens[task_id].remove(token)
+            data=self.store.commit_outcome(outcome,generation=generation,dispatch_revision=dispatched,format_result=formatted)
             if outcome.reason_code in ('llm:unauthorized','llm:binding_unavailable','llm:model_mismatch','llm:secret_missing','llm:outcome_unknown') and data['status']=='running':
                 data['status']='paused'; return view(self.store.write(data,expected_revision=data['revision']))
         data=self.store.read(task_id)

@@ -233,7 +233,7 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
             await runner.wait()
             self.assertEqual([i.status for i in all_items(self.project, runner.source_id)], ['done', 'pending'])
             self.assertEqual(backend.submits, 1)
-            self.assertEqual(runner.source().status, 'paused' if action == 'pause' else 'canceled')
+            self.assertEqual(runner.source().status, 'paused')
 
     async def test_T21_manual_retry_once_done_reopens(self):
         backend = LocalBackend(BackendError('approval:rejected', 'submit', 'rejected'))

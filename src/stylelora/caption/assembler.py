@@ -7,7 +7,11 @@ from .sorters import checked_sort
 from .types import CaptionResult
 
 
-def assemble_caption(view,config,trigger,guard,sorter=None):
+def assemble_caption(view,config,trigger,guard,sorter=None,*,profile=None):
+    from stylelora.modes.profiles import get_profile
+    profile = profile or get_profile()
+    if not profile.enabled or profile.trigger_semantics != 'style_identity' or guard.policy != profile.blocklist_policy:
+        raise ValidationError('profile:unavailable')
     trigger = normalize_tag(trigger)
     if not trigger or ',' in trigger or syntax_of(trigger) != 'plain':
         raise ValidationError('trigger:invalid')

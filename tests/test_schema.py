@@ -25,7 +25,7 @@ class SchemaTests(ProjectCase):
             indexes = db.execute("SELECT sql FROM sqlite_schema WHERE type='index'").fetchall()
             self.assertEqual(sum(r[0] is not None for r in indexes),15)
             self.assertEqual(sum(r[0] is None for r in indexes),2)
-            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],1)
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],2)
         self.read(check)
 
     def populated(self):

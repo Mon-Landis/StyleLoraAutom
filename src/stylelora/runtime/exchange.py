@@ -100,7 +100,7 @@ class Exchange:
                 self.rt.events.publish('export.'+record['status'], project_id=ctx.project_id,
                                        resource={'kind':'export', 'id':identity}, payload={k:v for k,v in record.items() if k not in ('relative_dir',)})
             return dict(record)
-        self.rt.supervisor.submit('export', work, project_id=ctx.project_id)
+        self.rt.supervisor.submit('export', work, project_id=ctx.project_id, cancel=stop.set, resource_id=identity)
         return dict(record)
 
     def get(self, ctx, identity, report=False):

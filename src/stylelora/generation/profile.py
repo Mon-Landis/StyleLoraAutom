@@ -78,7 +78,16 @@ def from_snapshot(value):
         raise BackendError('profile:invalid', 'profile') from None
 
 
-def build_request(config, source, item, project_root):
+def build_request(config, source, item, project_root, *, mode_context=None):
+    from stylelora.modes.profiles import get_profile, freeze_profile, resolve_profile, ModeContext
+    from stylelora.prompts.formatters import apply_formatter, FormatContext
+    from stylelora.prompts.types import PromptEntry
+    mode_context = mode_context or ModeContext(freeze_profile(get_profile()))
+    profile = resolve_profile(mode_context.profile)
+    if profile.generation_policy != 'existing-content-v1':
+        raise BackendError('mode:unsupported', 'profile')
+    apply_formatter(PromptEntry(tuple(part.strip() for part in item.prompt.split(',') if part.strip())),
+                    context=FormatContext(mode_context.profile, {}, str(item.item_id)))
     if config.profile.effort == 'medium' and source.negative_prompt.strip():
         raise BackendError('profile:effort_conflict', 'profile')
     size = config.sizes[item.aspect or config.default_aspect]

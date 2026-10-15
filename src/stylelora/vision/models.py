@@ -61,9 +61,10 @@ def validate_manifest(manifest):
 
 
 class ModelStore:
-    def __init__(self, root=None):
+    def __init__(self, root=None, *, supervisor=None):
         self.root = Path(root) if root is not None else Path(os.environ['LOCALAPPDATA'])/'StyleLoraAutom/models/wd'
         self._locks = {}
+        self.supervisor = supervisor
 
     def directory(self, manifest):
         validate_manifest(manifest)
@@ -87,7 +88,17 @@ class ModelStore:
             raise Unavailable('model_missing') from exc
         return directory
 
-    async def install_model(self, manifest, *, downloader, cancel):
+    async def install_model(self, manifest, *, downloader, cancel, _supervised=False):
+        if self.supervisor is not None and not _supervised:
+            record = self.supervisor.submit('model_download',
+                lambda: self.install_model(manifest, downloader=downloader, cancel=cancel, _supervised=True),
+                cancel=cancel.cancel)
+            identity = record['operation_id']
+            await asyncio.shield(self.supervisor.tasks[identity])
+            if identity in self.supervisor.failures:
+                raise self.supervisor.failures[identity]
+            cancel.raise_if_cancelled()
+            return self.verify_model(manifest)
         directory = self.directory(manifest)
         lock = self._locks.setdefault(str(directory), asyncio.Lock())
         async with lock:

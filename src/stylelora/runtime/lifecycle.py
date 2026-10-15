@@ -43,12 +43,33 @@ class Runtime:
         self.events = EventBridge(clock=clock)
         self.supervisor = TaskSupervisor(self.events)
         self.product = ProductStore(product_root)
+        self.supervisor.attach_store(self.product)
+        from stylelora.resources.network import NetworkController, NetworkPolicy
+        from stylelora.resources.compute import ComputeController, ComputePolicy
+        from .tasks import TaskRegistry
+        from .cancellation import StopCoordinator
+        settings = self.product.get_resources()
+        self.network = getattr(llm, 'network', None) or NetworkController()
+        self.network.configure(NetworkPolicy(**settings['network']))
+        self.compute = ComputeController(ComputePolicy(**settings['compute']))
+        for executor in self.executors.values():
+            if hasattr(executor, 'compute'):
+                executor.compute = self.compute
+            if hasattr(getattr(executor, 'store', None), 'supervisor'):
+                executor.store.supervisor = self.supervisor
+        self.resource_settings_lock = asyncio.Lock()
+        self.tasks = TaskRegistry(self.events, instance_id=self.instance_id, clock=clock)
+        self.stops = StopCoordinator(self.tasks)
+        self.task_monitor = None
+        self.task_adapters = {}
+        self.stop_history = {}
         self.product.secret_store = secret_store
         self.pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix='stylelora-work')
         self.current, self.generation, self.draining = None, 0, False
         self.transition = asyncio.Lock()
         self.codes, self.grants, self.known, self.runners, self.idempotency = {}, {}, {}, {}, {}
         from stylelora.llm.config import read_json
+        self.stop_history = read_json(self.product.root/'task-stops.json', {})
         self.known = {k: Path(v) for k, v in read_json(self.product.root/'recent.json', {}).items()}
         self.close_task = None
         self.shutdown_callback = None
@@ -64,6 +85,41 @@ class Runtime:
         except asyncio.CancelledError:
             await task
             raise
+
+    async def refresh_tasks(self):
+        from .task_adapters import refresh
+        await refresh(self)
+
+    async def record_stop(self, scope, kind, identity, reason):
+        from stylelora.llm.config import atomic_json
+        key = hashlib.sha256(f'{scope}:{kind}:{identity}'.encode()).hexdigest()
+        def save():
+            updated = dict(self.stop_history)
+            updated[key] = {'schema_version': 1, 'reason': reason, 'phase': 'paused'}
+            atomic_json(self.product.root/'task-stops.json', updated)
+            self.stop_history = updated
+        await self.product.call(save)
+
+    def stop_reason(self, scope, kind, identity):
+        key = hashlib.sha256(f'{scope}:{kind}:{identity}'.encode()).hexdigest()
+        return self.stop_history.get(key, {}).get('reason')
+
+    async def start_task_monitor(self):
+        if not hasattr(self, 'prompts'):
+            from stylelora.prompts.task_store import TaskStore
+            if any(TaskStore(self.product.root.parent).root.glob('*.json')):
+                from .prompts import Prompts
+                self.prompts = Prompts(self)
+        if self.task_monitor is None:
+            async def monitor():
+                while not self.draining:
+                    try:
+                        await self.refresh_tasks()
+                    except Exception:
+                        # A failing read must remain unavailable, never invent a failed task.
+                        pass
+                    await asyncio.sleep(.1)
+            self.task_monitor = asyncio.create_task(monitor())
 
     def bootstrap_code(self, origin=None):
         code = secrets.token_urlsafe(32)
@@ -120,7 +176,11 @@ class Runtime:
         ctx = ctx or self.current
         if ctx is None:
             return None
+        from stylelora.modes.profiles import get_profile, freeze_profile
+        profile = get_profile(ctx.handle.metadata.mode)
         return dict(project_id=ctx.project_id, metadata=plain(ctx.handle.metadata),
+                    mode=profile.mode, display_name=profile.display_name,
+                    capabilities=sorted(profile.capabilities), profile=plain(freeze_profile(profile)),
                     schema_version=ctx.handle.schema_version, recovery=plain(ctx.handle.writer.report),
                     version=version(self.secret, ctx.project_id, ctx.handle.metadata, self.metadata_revision))
 
@@ -150,6 +210,11 @@ class Runtime:
             handle = await self.blocking(lambda: projects.create_project(path, **create) if create is not None else projects.open_project(path))
             self.generation += 1
             ctx = self.current = ProjectContext(str(uuid4()), self.generation, handle)
+            scope = hashlib.sha256(str(handle.root).encode()).hexdigest()
+            self.supervisor.project_scopes[ctx.project_id] = scope
+            for record in self.supervisor.records.values():
+                if record.get('project_scope') == scope:
+                    record['project_id'] = ctx.project_id
             known_id = next((key for key, value in self.known.items() if value == path), str(uuid4()))
             self.known[known_id] = path
             from stylelora.llm.config import atomic_json
@@ -162,7 +227,9 @@ class Runtime:
         ctx = self.current
         if ctx is None:
             return
+        await self.refresh_tasks()
         ctx.closing = True
+        await self.stops.drain(ctx.project_id, 'project_close')
         for (pid, _), runner in tuple(self.runners.items()):
             if pid == ctx.project_id and runner.source().status == 'running':
                 await runner.pause('user:paused')
@@ -199,10 +266,17 @@ class Runtime:
         if self.close_task is None:
             async def finish():
                 self.draining = self.supervisor.draining = True
+                if self.task_monitor is not None:
+                    await self.task_monitor
+                await self.refresh_tasks()
+                await self.stops.drain(reason=reason)
                 if hasattr(self, 'prompts'):
                     await self.prompts.pause()
                 await self.close_project()
                 await self.supervisor.join()
+                for executor in self.executors.values():
+                    if hasattr(executor, 'unload'):
+                        await executor.unload()
                 self.product.close()
                 self.pool.shutdown(wait=True)
             self.close_task = asyncio.create_task(finish())

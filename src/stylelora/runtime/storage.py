@@ -101,7 +101,7 @@ class Storage:
                     count=len(candidates), bytes=sum(v[0] for v in candidates.values()),
                     irreversible=True, expires_at=self.rt.clock()+900)
 
-    def cleanup(self, ctx, value):
+    def cleanup(self, ctx, value, *, cancel=lambda: False):
         fields(value, {'preview_id', 'digest', 'confirm'}, {'preview_id', 'digest', 'confirm'})
         if value['confirm'] is not True:
             raise Failure(422, 'cleanup:confirmation_required')
@@ -113,6 +113,8 @@ class Storage:
             raise Failure(409, 'cleanup:preview_stale')
         results = []
         for relative, identity in candidates.items():
+            if cancel():
+                break
             path = ctx.handle.root/relative
             try:
                 if kind == 'rejected_files':
@@ -132,7 +134,7 @@ class Storage:
                 results.append({'relative_path': relative, 'status': 'failed',
                                 'code': exc.code if isinstance(exc, Failure) else 'storage:unavailable'})
         self.summaries.pop(ctx.project_id, None)
-        return {'items': results}
+        return {'items': results, 'stopped': len(results) < len(candidates)}
 
     @staticmethod
     def unlink(ctx, path, identity):

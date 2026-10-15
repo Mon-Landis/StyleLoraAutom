@@ -149,7 +149,7 @@ class SourceRunner:
 
     async def stop(self):
         async with self.control:
-            return await self._transition('canceled', 'user:stopped')
+            return await self._transition('paused', 'user:stopped')
 
     async def set_cost_policy(self, policy):
         async with self.control:
@@ -167,6 +167,8 @@ class SourceRunner:
         return self.source().status == 'running' and self.cycle_id == cycle and current is not None and current[0] == cycle
 
     async def run_cycle(self, cycle_id, backend, config, caps):
+        from stylelora.modes.profiles import get_profile, freeze_profile, ModeContext
+        mode_context = ModeContext(freeze_profile(get_profile(self.project.metadata.mode)), self.project.metadata.trigger_word)
         handle, preparation, sent_item = None, None, None
         try:
             async with self.control:
@@ -177,7 +179,7 @@ class SourceRunner:
                 if not self._running(cycle_id):
                     break
                 source = self.source()
-                request = build_request(config, source, item, self.project.root)
+                request = build_request(config, source, item, self.project.root, mode_context=mode_context)
                 if request.save_path.exists() or item.item_id in self.existing_artifacts:
                     evidence = await probe(self.project, item, backend)
                     if item.item_id not in self.existing_artifacts or evidence.verdict != 'complete':

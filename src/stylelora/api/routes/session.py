@@ -19,8 +19,8 @@ def resource(value, status=200, location=None):
     return JSONResponse(value, status_code=status, headers=headers)
 
 
-def accepted(rt, kind, work, project_id=None):
-    operation = rt.supervisor.submit(kind, work, project_id=project_id)
+def accepted(rt, kind, work, project_id=None, *, cancel=None):
+    operation = rt.supervisor.submit(kind, work, project_id=project_id, cancel=cancel)
     return resource(operation, 202, '/api/operations/' + operation['operation_id'])
 
 
@@ -46,6 +46,9 @@ async def shutdown(request: Request):
         raise Failure(503, 'dependency:unavailable')
     async def work():
         rt.draining = True
+        await rt.refresh_tasks()
+        rt.stops.timeout = grace
+        await rt.stops.drain(reason='shutdown')
         await rt.close_project()
         if hasattr(rt, 'prompts'):
             await rt.prompts.pause()
@@ -102,7 +105,12 @@ async def operation(operation_id: str, request: Request):
 async def cancel_operation(operation_id: str, request: Request):
     rt = runtime(request)
     check(expected(request), rt.supervisor.get(operation_id)['version'])
-    # Arbitrary file threads cannot safely be canceled by dropping their owner.
+    await rt.refresh_tasks()
+    for identity, (_, linked, _) in rt.tasks.records.items():
+        if linked.id == operation_id and linked.kind in ('export', 'cleanup', 'model_download'):
+            from stylelora.runtime.contracts import plain
+            receipt = await rt.tasks.cancel(identity, request.headers.get('idempotency-key') or 'operation:'+operation_id)
+            return resource(plain(receipt), 200 if receipt.no_op else 202)
     raise Failure(409, 'operation:not_cancelable')
 
 
@@ -121,9 +129,11 @@ async def recent(request: Request):
 @router.post('/projects')
 async def create(request: Request):
     rt = runtime(request)
-    value = await body(request, {'grant_id', 'name', 'trigger_word'}, {'grant_id', 'name'})
+    value = await body(request, {'grant_id', 'name', 'trigger_word', 'mode'}, {'grant_id', 'name'})
+    from stylelora.modes.profiles import get_profile
+    get_profile(value.get('mode', 'style'))
     path = rt.grant_path(value['grant_id'], 'project_create')
-    return accepted(rt, 'project_create', lambda: rt.open(path, create={'name': value['name'], 'trigger_word': value.get('trigger_word', '')}))
+    return accepted(rt, 'project_create', lambda: rt.open(path, create={'name': value['name'], 'trigger_word': value.get('trigger_word', ''), 'mode': value.get('mode', 'style')}))
 
 
 @router.post('/projects/open')

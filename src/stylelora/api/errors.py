@@ -5,6 +5,9 @@ from stylelora.llm.types import LlmFailure
 
 
 def translate(exc):
+    from stylelora.modes.profiles import ProfileError
+    if isinstance(exc, ProfileError):
+        return Failure(422, exc.code)
     if isinstance(exc, Failure):
         return exc
     from stylelora.rules.service import PreviewExpired
@@ -35,7 +38,7 @@ def translate(exc):
             return Failure(status, code)
     if isinstance(exc, LlmFailure):
         code = exc.code if hasattr(exc, 'code') else 'dependency:unavailable'
-        return Failure(409 if 'conflict' in code else 503, code)
+        return Failure(422 if code == 'resource:invalid_policy' else 409 if 'conflict' in code else 503, code)
     return Failure(500, 'internal:error')
 
 

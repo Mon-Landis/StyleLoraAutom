@@ -108,7 +108,7 @@ class JobTests(ProjectCase):
         asyncio.run(run())
         self.assertEqual(executor.calls[1].evidence.wd_tags, (Tag('blue sky', .9),))
 
-    def test_T21_pause_accepts_inflight_cancel_discards(self):
+    def test_T21_pause_and_cancel_accept_inflight(self):
         for action in ('pause', 'cancel'):
             image = self.image(payload=png('blue' if action == 'pause' else 'red'))
             job = self.batch([image.image_id], batch=action)
@@ -125,8 +125,8 @@ class JobTests(ProjectCase):
                 release.set()
                 return await task
             final = asyncio.run(run())
-            self.assertEqual(final.status, 'done' if action == 'pause' else 'canceled')
-            self.assertEqual(final.done_count, 1 if action == 'pause' else 0)
+            self.assertEqual(final.status, 'done')
+            self.assertEqual(final.done_count, 1)
 
     def test_T18_missing_changed_and_reject_scope(self):
         image = self.image(payload=png())
@@ -140,6 +140,22 @@ class JobTests(ProjectCase):
         runner = JobRunner(self.project, {'wd': executor}, snapshots={'wd': snapshot()})
         self.assertEqual(asyncio.run(runner.run(job.job_id)).skipped_count, 1)
         self.assertEqual(executor.calls, [])
+
+    def test_F26_T20_unsettled_dispatch_blocks_resume(self):
+        image = self.image(payload=png())
+        job = self.batch([image.image_id], batch='unsettled')
+        async def exercise():
+            executor = FakeExecutor()
+            runner = JobRunner(self.project, {'wd': executor}, snapshots={'wd': snapshot()})
+            await runner.prepare(job, executor)
+            await runner.write(lambda db: jobs.dispatch_receipt(db, job.job_id, image.image_id, 'inflight'))
+            await runner.control(job.job_id, 'pause')
+            from stylelora.project_db.errors import StateConflict
+            with self.assertRaises(StateConflict):
+                await runner.control(job.job_id, 'resume')
+            self.assertEqual(runner.get(job.job_id).progress_json['dispatch'][str(image.image_id)]['phase'], 'inflight')
+            self.assertEqual(runner.get(job.job_id).status, 'paused')
+        asyncio.run(exercise())
 
     def test_T22_commit_unknown_queries_without_reinference(self):
         image = self.image(payload=png())

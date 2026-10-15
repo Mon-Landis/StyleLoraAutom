@@ -9,7 +9,11 @@ def override_digest(trigger, catalog):
     return digest({'trigger':normalize_tag(trigger),'catalog':catalog.revision})
 
 
-def validate_trigger(trigger, style_prompt, *, catalog=None, trigger_override_digest=None):
+def validate_trigger(trigger, style_prompt, *, catalog=None, trigger_override_digest=None, profile=None):
+    from stylelora.modes.profiles import get_profile
+    profile = profile or get_profile()
+    if not profile.enabled or profile.protected_tags_policy != 'trigger-v1':
+        return (Issue('mode:unsupported', severity='error'),)
     key = normalize_tag(trigger)
     if not key:
         return (Issue('trigger:missing',severity='error'),)

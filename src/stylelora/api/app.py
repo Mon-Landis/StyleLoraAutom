@@ -10,6 +10,7 @@ from .security import protect
 def create_app(runtime, *, frontend_dist=None):
     @asynccontextmanager
     async def lifespan(app):
+        await runtime.start_task_monitor()
         yield
         await runtime.close()
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -42,6 +43,9 @@ def create_app(runtime, *, frontend_dist=None):
     app.include_router(storage.router)
     app.include_router(catalog_extra.router)
     app.include_router(local.router)
+    from .routes import tasks, resource_settings
+    app.include_router(tasks.router)
+    app.include_router(resource_settings.router)
     import re
     normalize = lambda path: re.sub(r'\{[^}]+\}', '{}', path)
     implemented = {(normalize(r.path), m) for r in app.routes if getattr(r, 'path', '').startswith('/api')

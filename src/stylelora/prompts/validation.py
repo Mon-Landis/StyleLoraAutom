@@ -38,7 +38,10 @@ def identifier(value):
 
 def normalize_tag(tag, catalog=None):
     text(tag)
+    # Placeholder identifiers are syntax, not tag words: retain their underscores.
     key = ' '.join(shared_normalize(tag).split())
+    for placeholder in re.findall(r'{{[^{}]*}}', tag):
+        key = key.replace(' '.join(shared_normalize(placeholder).split()), placeholder)
     if catalog is not None:
         hit = catalog.lookup(key)
         if hit.match in ('known', 'alias'):
@@ -86,7 +89,8 @@ def validate_dto(v):
         if hasattr(v, name):
             integer(getattr(v, name))
     if hasattr(v, 'schema_version'):
-        require(v.schema_version == 1, 'newer_version' if v.schema_version > 1 else 'schema:invalid')
+        versions = (1, 2) if isinstance(v, (PromptDictionary, FeatureDictionary)) else (1,)
+        require(v.schema_version in versions, 'newer_version' if v.schema_version > max(versions) else 'schema:invalid')
     for name in ('dictionary_id', 'task_id', 'preview_id'):
         if hasattr(v, name):
             identifier(getattr(v, name))
@@ -130,6 +134,7 @@ def validate_dto(v):
                 require(isinstance(candidates, tuple))
                 require(all(isinstance(c, FeatureCandidate) and c.dimension == dim for c in candidates))
         else:
+            require(v.category == 'full_content', 'dictionary:category_unsupported')
             require(isinstance(v.entries, tuple) and all(isinstance(e, PromptEntry) for e in v.entries))
     if isinstance(v, ConstraintSpec):
         for n in ('minimum_ratio', 'maximum_ratio'):
@@ -234,8 +239,14 @@ def strings(values, nonempty=False):
 
 
 @lru_cache(maxsize=1)
-def skill_text():
+def _style_skill_text():
     return (Path(__file__).resolve().parents[3] / 'skills/prompt-composer/SKILL.md').read_text(encoding='utf-8')
+
+
+def skill_text(profile=None):
+    if profile is not None:
+        require(profile.enabled and profile.templates['R1'].enabled, 'profile:unavailable')
+    return _style_skill_text()
 
 
 @lru_cache(maxsize=8)
@@ -252,7 +263,9 @@ SHORT = {'mid', 'early', 'recent', 'general', 'safe', 'sensitive', 'explicit', '
 EXCEPTIONS = {'gradient hair', 'pastel pink dress', 'stained glass window', 'holding paintbrush', 'easel', 'holding photo', 'border collie', 'gothic architecture', 'steampunk goggles'}
 
 
-def validate_content(entry, *, catalog=None, input_tags=None, terms=None):
+def validate_content(entry, *, catalog=None, input_tags=None, terms=None, profile=None):
+    if profile is not None:
+        require(profile.enabled and profile.qc_policy == 'visible-content-v1', 'profile:unavailable')
     catalog = catalog or LocalCatalog()
     terms = terms if terms is not None else forbidden_terms()
     allowed = {normalize_tag(t, catalog) for t in (input_tags if input_tags is not None else entry.tags)}
@@ -279,7 +292,7 @@ def validate_content(entry, *, catalog=None, input_tags=None, terms=None):
     return entry
 
 
-def validate_composer_result(text_value, request, *, catalog=None, terms=None):
+def validate_composer_result(text_value, request, *, catalog=None, terms=None, profile=None):
     data = strict_loads(text_value)
     require(isinstance(data, dict), 'llm:schema_contract')
     expected = {'status', 'tags', 'natural_language', 'out_of_frame', 'added', 'dropped', 'aspect'}
@@ -307,7 +320,7 @@ def validate_composer_result(text_value, request, *, catalog=None, terms=None):
     require(not any(re.search(r'(?<!\w)' + re.escape(t) + r'(?!\w)', nl) for t in invisible), 'composer:forbidden_content')
     if 'no humans' in keys:
         require(not any(re.fullmatch(r'\d+(?:girls?|boys?|people)|solo', t) for t in keys), 'llm:schema_contract')
-    validate_content(PromptEntry(result.tags, result.natural_language, result.aspect), catalog=catalog, input_tags=inputs, terms=terms)
+    validate_content(PromptEntry(result.tags, result.natural_language, result.aspect), catalog=catalog, input_tags=inputs, terms=terms, profile=profile)
     return result
 
 

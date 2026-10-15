@@ -146,16 +146,39 @@ class ImageService:
         return self.view(ctx, row, coverage, metadata=metadata)
 
     def stats(self, ctx, query, groups):
+        from stylelora.modes.profiles import get_profile
+        from stylelora.modes.statistics import ImageSummary, summarize
+        from stylelora.caption.blocklist import build_blocklist, check_blocklist
+        from stylelora.annotations.projection import read_rows
+        from stylelora.annotations.merge import merge_annotations
+        from stylelora.caption.types import CaptionConfig
+        from stylelora.tagging.catalog import LocalCatalog
+        from stylelora.project_db.repositories import sources
+        profile = get_profile(ctx.handle.metadata.mode)
         query = query_input(query)
         if not groups or any(g not in ('review_status', 'rating', 'source_id', 'annotation_coverage') for g in groups):
             raise Failure(422, 'input:invalid')
         with read_snapshot(ctx.handle) as db:
             rows, _ = self.scan(db, query)
+            summaries = []
+            catalog = self.rt.catalog or LocalCatalog()
+            for row, _ in rows:
+                if row.file_missing:
+                    continue
+                view = merge_annotations(read_rows(db, row.image_id)[0], CaptionConfig(), editing=True)
+                source = sources.get_source(db, row.source_id)
+                guard = build_blocklist(source.style_prompt, catalog, profile=profile)
+                hits = check_blocklist(view.tags, view.nl, guard)
+                aspect = 'square' if row.width == row.height else 'landscape' if row.width > row.height else 'portrait'
+                summaries.append(ImageSummary(row.image_id, row.rating, row.review_status,
+                    {'aspect': (aspect,), 'content': tuple(t.tag for t in view.tags)},
+                    tuple('blocklist:hit' for _ in hits)))
+            mode_stats = summarize(summaries, profile)
         result = []
         for group in dict.fromkeys(groups):
             counts = Counter(c if group == 'annotation_coverage' else getattr(r, group) for r, c in rows)
             result.append(dict(by=group, buckets=[dict(key=k, count=n) for k, n in sorted(counts.items(), key=lambda p: str(p[0]))]))
-        return dict(total=len(rows), groups=result)
+        return dict(total=len(rows), groups=result, mode_statistics=plain(mode_stats))
 
     def preview(self, ctx, query):
         query = query_input(query)

@@ -49,3 +49,25 @@ class ProductStore:
 
     def close(self):
         self.queue.shutdown(wait=True)
+
+    def get_resources(self):
+        from stylelora.resources.network import NetworkPolicy
+        from stylelora.resources.compute import ComputePolicy
+        from .contracts import plain
+        return read_json(self.root/'resources.json', dict(revision='0', network=plain(NetworkPolicy()), compute=plain(ComputePolicy())))
+
+    def update_resources(self, value):
+        from stylelora.resources.network import NetworkPolicy
+        from stylelora.resources.compute import ComputePolicy
+        from .contracts import plain
+        fields(value, {'expected_revision', 'network', 'compute'}, {'expected_revision', 'network', 'compute'})
+        try:
+            network, compute = NetworkPolicy(**value['network']), ComputePolicy(**value['compute'])
+        except (TypeError, ValueError):
+            raise Failure(422, 'resource:invalid_policy') from None
+        current = self.get_resources()
+        if value['expected_revision'] != current['revision']:
+            raise Failure(409, 'resource:revision_conflict')
+        result = dict(revision=str(int(current['revision'])+1), network=plain(network), compute=plain(compute))
+        atomic_json(self.root/'resources.json', result)
+        return result

@@ -27,6 +27,18 @@ def get_job(db: ReadSession, job_id: int) -> JobRow:
     return get(db, 'jobs', JobRow, job_id)
 
 
+def dispatch_receipt(db, job_id, image_id, phase):
+    job = get_job(db, job_id)
+    if phase == 'inflight' and job.status != 'running':
+        raise StateConflict('Dispatch stopped')
+    progress = job.progress_json
+    receipts = progress.setdefault('dispatch', {})
+    receipts[str(image_id)] = {'schema_version': 1, 'phase': phase}
+    cas(db, 'jobs', job_id, {'progress_json': dumps(progress), 'updated_at': now(job.updated_at)},
+        {'status': job.status, 'updated_at': job.updated_at})
+    return get_job(db, job_id)
+
+
 def list_jobs(db: ReadSession, *, status: JobStatus | None = None, batch_id: str | None = None, page: PageRequest) -> Page[JobRow]:
     return paginate(db, 'jobs', JobRow, page, lambda r: (status is None or r.status == status) and (batch_id is None or r.batch_id == batch_id))
 

@@ -23,7 +23,7 @@ class FakeDownload:
 def fixture():
     files = {'model.onnx': b'fake model', 'tags.csv': b'name,category\nBlue_Sky,0\nperson,4\nsafe,9\n'}
     schema = {'size': 2, 'channel_order': 'BGR', 'layout': 'NHWC', 'dtype': 'float32',
-              'scale': 1., 'offset': 0., 'batch': 'dynamic', 'memory_per_image': 100,
+              'scale': 1., 'offset': 0., 'batch': 'dynamic', 'memory_per_image': 100, 'resident_bytes': 100,
               'input_name': 'input', 'output_name': 'output',
               'csv_schema': {'name': 'name', 'category': 'category'}}
     manifest = ModelManifest('fake', 'tests/fake', 'a'*40, tuple(ModelFile(name, hashlib.sha256(data).hexdigest(), len(data)) for name, data in files.items()), schema, 'wd-prep-v1', '')

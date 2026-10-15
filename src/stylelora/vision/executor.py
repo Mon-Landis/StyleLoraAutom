@@ -18,6 +18,7 @@ from stylelora.executors.cache import cache_keys
 from stylelora.executors.types import ExecutionResult, Unavailable
 from stylelora.tagging.normalization import normalize_tag
 from .rating import RatingRouter, decision_for, r0_applies
+from stylelora.modes.profiles import profile_from_snapshot
 
 R2_SCHEMA = {'type': 'object', 'required': ['vision_tags', 'vision_description'], 'additionalProperties': False,
             'properties': {'vision_tags': {'type': 'array', 'items': {'type': 'string'}},
@@ -52,15 +53,20 @@ class SkillStore:
 def build_vision_request(context, decision, binding, *, system_text, budget=None, tier=None):
     evidence = context.evidence
     params = context.snapshot['params']
+    profile = profile_from_snapshot(context.snapshot)
     payload = {'tags': _tags([t.tag for t in evidence.original_tags + evidence.wd_tags]),
-               'dataset_mode_policy': params.get('dataset_mode_policy', 'style'),
+               'dataset_mode_policy': profile.dataset_mode_policy,
                'rating_verified': decision.verified,
                'rating_policy': {'rating': decision.rating, 'route': decision.route,
                                  'r0_applies': r0_applies(decision)}}
     tiers = tuple(ImageTier(**value) for value in params.get('tiers', [asdict(t) for t in DEFAULT_TIERS]))
     if tier is not None:
         tiers = tiers[tiers.index(tier):]
-    rules = {'protected_tags': params.get('protected_tags', []),
+    protected = tuple(params.get('protected_tags', [])) if profile.protected_tags_policy == 'trigger-v1' else ()
+    trigger = params.get('mode_trigger')
+    if trigger:
+        protected = tuple(dict.fromkeys((trigger, *protected)))
+    rules = {'protected_tags': protected,
              'dataset_mode_policy': payload['dataset_mode_policy']}
     system = system_text + '\nR0 applies ONLY on the normal route when rating_verified=false.\n'
     system += json.dumps(rules, ensure_ascii=False) + '\nReturn exactly JSON matching: ' + json.dumps(VISION_SCHEMA)
@@ -108,6 +114,9 @@ class VisionExecutor:
         self._bindings = {}
 
     def templates(self, snapshot):
+        profile = profile_from_snapshot(snapshot)
+        if not profile.templates['R2'].enabled:
+            raise Unavailable('skill_unavailable')
         hashes = snapshot['params'].get('skill_hashes', {})
         return self.skills.get(hashes.get('R0')) + '\n' + self.skills.get(hashes.get('R2'))
 
@@ -216,7 +225,7 @@ class VisionExecutor:
                 continue
             content = ' '.join(value['vision_tags']) + ' ' + value['vision_description']
             params = context.snapshot['params']
-            if params.get('dataset_mode_policy', 'style') == 'style':
+            if profile_from_snapshot(context.snapshot).qc_policy == 'visible-content-v1':
                 if any(word.lower() in content.lower() for word in params.get('forbidden_terms', [])):
                     return ExecutionResult('failed', 'contract_violation', rating=context.rating)
                 if any(word.lower() in content.lower() for word in params.get('review_terms', [])):

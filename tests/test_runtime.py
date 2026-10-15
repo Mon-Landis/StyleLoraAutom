@@ -214,9 +214,20 @@ class RuntimeTests(ProjectCase):
 
 
 class MigrationTests(ProjectCase):
+    def setUp(self):
+        super().setUp()
+        close_project(self.project)
+        metadata = json.loads((self.root/'project.json').read_text())
+        metadata['format_version'] = 1
+        metadata.pop('mode', None)
+        migrations.atomic_json(self.root/'project.json', metadata)
+        with closing(sqlite3.connect(self.root/'project.db')) as db:
+            db.execute('PRAGMA user_version=1')
+        with patch.object(migrations, 'CURRENT_VERSION', 1):
+            self.project = open_project(self.root)
+
     def registry(self, upgrade):
-        # No released pre-v1 format exists. Exercise future protocol with a
-        # trusted test-only v1 -> v2 migration, without shipping a fake old format.
+        # Inject a trusted migration to exercise rollback and publication recovery.
         info = MigrationInfo(1,2,'test_step',hashlib.sha256(b'test_step_v1').hexdigest())
         return migrations.Migration(info,upgrade)
 
@@ -262,7 +273,7 @@ class MigrationTests(ProjectCase):
     def test_M03_future_versions_unchanged_and_untrusted_mismatch(self):
         close_project(self.project)
         original = json.loads((self.root/'project.json').read_text())
-        for format_version,user_version,error in ((2,1,NewerProject),(1,2,NewerProject),(1,0,VersionMismatch)):
+        for format_version,user_version,error in ((3,1,NewerProject),(1,3,NewerProject),(1,0,VersionMismatch)):
             metadata = {**original,'format_version':format_version}
             migrations.atomic_json(self.root/'project.json',metadata)
             with closing(sqlite3.connect(self.root/'project.db')) as db:
@@ -275,7 +286,7 @@ class MigrationTests(ProjectCase):
 
     def test_M04_missing_chain_space_and_checksum(self):
         close_project(self.project)
-        with patch.object(migrations,'CURRENT_VERSION',2):
+        with patch.object(migrations,'CURRENT_VERSION',2), patch.object(migrations,'REGISTRY',()):
             with self.assertRaises(VersionMismatch):
                 open_project(self.root)
         step = self.registry(lambda db: None)

@@ -132,7 +132,8 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
                 await service.control_task(task.task_id,action,expected_revision=sent['revision'])
                 outcome=TaskOutcome(task.task_id,0,'ok',entry=PromptEntry(('forest',)))
                 committed=service.store.commit_outcome(outcome,generation=1,dispatch_revision=receipt['dispatch_revision'])
-                self.assertEqual(committed['outcomes'][0]['outcome']['status'],'ok' if action=='pause' else 'running')
+                self.assertEqual(committed['outcomes'][0]['outcome']['status'],'ok')
+                self.assertEqual(committed['status'], 'paused')
                 self.assertEqual(service.store.commit_outcome(outcome,generation=1,dispatch_revision=receipt['dispatch_revision']),committed)
 
     async def test_T13_refill_and_not_ready(self):
@@ -167,8 +168,11 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
             fake=Fake([LlmFailure('llm:timeout',outcome='unknown')]); service=TaskService(root=root,llm=fake)
             task=await service.create_task(self.request(optimize=True),request_key='k',dictionaries=(dictionary([PromptEntry(('forest',))]),))
             paused=await service.run(task.task_id); self.assertEqual(paused.status,'paused')
-            await service.control_task(task.task_id,'resume',expected_revision=paused.revision)
-            done=await service.run(task.task_id); self.assertFalse(done.ready); self.assertEqual(len(fake.calls),1)
+            with self.assertRaisesRegex(PromptError, 'task:reconciliation_required'):
+                await service.control_task(task.task_id,'resume',expected_revision=paused.revision)
+            self.assertEqual(service.get_task(task.task_id).status, 'paused')
+            self.assertFalse(service.get_task(task.task_id).ready)
+            self.assertEqual(len(fake.calls),1)
 
     async def test_T12_append_two_file_crash_window(self):
         with TemporaryDirectory() as root:

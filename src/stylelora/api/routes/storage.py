@@ -74,6 +74,8 @@ async def cleanup(project_id: str, request: Request):
     ctx, svc = rt.require_project(project_id), service(rt)
     svc.busy(ctx)
     preview = request.url.path.endswith('/preview')
+    from threading import Event
+    stop = Event()
     async def work():
-        return await rt.blocking(lambda: (svc.preview if preview else svc.cleanup)(ctx, value))
-    return accepted(rt, 'cleanup_preview' if preview else 'cleanup', work, project_id)
+        return await rt.blocking(lambda: svc.preview(ctx, value) if preview else svc.cleanup(ctx, value, cancel=stop.is_set))
+    return accepted(rt, 'cleanup_preview' if preview else 'cleanup', work, project_id, cancel=None if preview else stop.set)

@@ -30,16 +30,18 @@ def _write(path, value):
         raise
 def _encode(value):
     if isinstance(value, FeatureDictionary):
-        return {'schema_version':1,'kind':'features','dictionary_id':value.dictionary_id,'name':value.name,'revision':value.revision,
+        return {'schema_version':2,'kind':'features','dictionary_id':value.dictionary_id,'name':value.name,'revision':value.revision,
                 'dimensions':{d:[{'tag':c.tag,'rating':c.rating} for c in cs] for d,cs in value.dimensions.items()}}
-    return {'schema_version':1,'kind':'prompts','dictionary_id':value.dictionary_id,'name':value.name,'revision':value.revision,
+    return {'schema_version':2,'kind':'prompts','category':value.category,'dictionary_id':value.dictionary_id,'name':value.name,'revision':value.revision,
             'entries':[plain(e) for e in value.entries]}
 def _decode(data):
     require(isinstance(data, dict))
     integer(data.get('schema_version'))
-    require(data['schema_version'] == 1, 'newer_version' if data['schema_version'] > 1 else 'schema:invalid')
+    require(data['schema_version'] in (1,2), 'newer_version' if data['schema_version'] > 2 else 'schema:invalid')
     kind=data.get('kind'); identifier(data.get('dictionary_id')); integer(data.get('revision'),1); text(data.get('name'))
-    require(set(data) <= {'schema_version','kind','dictionary_id','name','revision','dimensions' if kind=='features' else 'entries','_operations'})
+    allowed = {'schema_version','kind','dictionary_id','name','revision','dimensions' if kind=='features' else 'entries','_operations'}
+    if kind == 'prompts': allowed.add('category')
+    require(set(data) <= allowed)
     if kind == 'features':
         require(isinstance(data.get('dimensions'),dict))
         dims={}
@@ -47,10 +49,10 @@ def _decode(data):
             require(isinstance(rows,list))
             for r in rows: require(isinstance(r,dict) and set(r) <= {'tag','rating'} and 'tag' in r)
             dims[d]=tuple(FeatureCandidate(d,r['tag'],r.get('rating')) for r in rows)
-        return FeatureDictionary(data['dictionary_id'],data['name'],1,dims,data['revision'])
+        return FeatureDictionary(data['dictionary_id'],data['name'],data['schema_version'],dims,data['revision'])
     if kind == 'prompts':
         require(isinstance(data.get('entries'),list))
-        return PromptDictionary(data['dictionary_id'],data['name'],1,tuple(construct(PromptEntry,e) for e in data['entries']),data['revision'])
+        return PromptDictionary(data['dictionary_id'],data['name'],data['schema_version'],tuple(construct(PromptEntry,e) for e in data['entries']),data['revision'],data.get('category','full_content'))
     raise PromptError('schema:invalid')
 def load_dictionary(dictionary_id, *, root=None):
     for kind in ('features','prompts'):
@@ -67,7 +69,11 @@ def save_dictionary(value, *, expected_revision, request_key, root=None):
         operations=data.get('_operations',{}) if data else {}
         signature=digest({'operation':'save','value':_encode(value),'expected_revision':expected_revision})
         if request_key in operations:
-            require(operations[request_key]['digest']==signature,'dictionary:request_key_conflict')
+            legacy = _encode(value)
+            legacy['schema_version'] = 1
+            legacy.pop('category', None)
+            legacy_signature = digest({'operation':'save','value':legacy,'expected_revision':expected_revision})
+            require(operations[request_key]['digest'] in (signature, legacy_signature),'dictionary:request_key_conflict')
             return operations[request_key]['result']
         require((data['revision'] if data else 0)==expected_revision,'dictionary:revision_conflict')
         value=replace(value,revision=expected_revision+1)
@@ -81,9 +87,10 @@ def append_entries(dictionary_id, entries, *, expected_revision, request_key, ro
         value=load_dictionary(dictionary_id,root=root)
         require(isinstance(value,PromptDictionary))
         path=_path(dictionary_id,'prompts',root); data=strict_loads(path.read_bytes()); operations=data.get('_operations',{})
-        signature=digest({'operation':'append','entries':entries,'expected_revision':expected_revision})
+        legacy_signature=digest({'operation':'append','entries':entries,'expected_revision':expected_revision})
+        signature=digest({'operation':'append','entries':entries,'expected_revision':expected_revision,'category':value.category})
         if request_key in operations:
-            require(operations[request_key]['digest']==signature,'dictionary:request_key_conflict')
+            require(operations[request_key]['digest'] in (signature,legacy_signature),'dictionary:request_key_conflict')
             result=operations[request_key]['result']; result['conflicts']=tuple(construct(Issue,i) for i in result['conflicts'])
             return AppendResult(**result)
         require(value.revision==expected_revision,'dictionary:revision_conflict')
@@ -105,8 +112,12 @@ def append_entries(dictionary_id, entries, *, expected_revision, request_key, ro
         return result
 
 
-def list_dictionaries(*, root=None, kind=None):
+def list_dictionaries(*, category=None, root=None, kind=None):
     require(kind in (None,'features','prompts'))
+    if category is not None:
+        require(category == 'full_content','dictionary:category_unsupported')
+        require(kind != 'features','dictionary:category_unsupported')
+        kind = 'prompts'
     return tuple(load_dictionary(p.stem,root=root) for k in ((kind,) if kind else ('features','prompts'))
                  for p in sorted((_root(root)/k).glob('*.json')))
 

@@ -61,7 +61,14 @@ class Prompts:
         fields(value, {'action'}, {'action'})
         current = self.service.get_task(identity)
         check(expected, self.view(current)['version'])
-        result = await self.service.control_task(identity, value['action'], expected_revision=current.revision)
+        if value['action'] == 'cancel':
+            from .tasks import ResourceRef
+            from .task_adapters import DomainAdapter
+            identity_task = self.rt.tasks.register(DomainAdapter(self.rt, 'prompt'), ResourceRef('prompt', identity), None)
+            await self.rt.tasks.cancel(identity_task, 'prompt-cancel:'+expected)
+            result = self.service.get_task(identity)
+        else:
+            result = await self.service.control_task(identity, value['action'], expected_revision=current.revision)
         if value['action'] == 'resume':
             self.launch(identity)
         return self.view(result)

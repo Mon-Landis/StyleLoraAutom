@@ -209,7 +209,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(peak, 2)
         self.assertEqual(results[0].outcome, 'unknown')
         self.assertEqual(results[-1].outcome, 'not_sent')
-        self.assertEqual(service._gate._value, 2)
+        self.assertEqual(service.network.active, 0)
 
     async def test_precanceled_no_dispatch(self):
         service, req = await self.make()
@@ -286,17 +286,25 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         repaired = json.loads(self.calls[2][3])['messages'][1]['content'][1]
         self.assertEqual(first, repaired)
 
-    async def test_actual_timeout_and_queue_wait_excluded(self):
+    async def test_actual_timeout_and_queue_deadline(self):
         async def transport(*args):
             await asyncio.sleep(0.04)
             return response()
         service, req = await self.make(transport, concurrency=1)
-        replies = await asyncio.gather(*(service.complete(replace(req, request_id=str(i), timeout_s=0.07))
+        replies = await asyncio.gather(*(service.complete(replace(req, request_id=str(i), timeout_s=1))
                                          for i in range(3)))
         self.assertEqual(len(replies), 3)
         with self.assertRaises(LlmFailure) as caught:
             await service.complete(replace(req, timeout_s=0.01))
         self.assertEqual(caught.exception.code, 'llm:timeout')
+        lease = await service.network.acquire(req.binding.binding_id, ('held',), cancel=CancelToken(), deadline=float('inf'))
+        try:
+            with self.assertRaises(LlmFailure) as queued:
+                await service.complete(replace(req, timeout_s=.01, transport_retry_limit=0))
+            self.assertEqual(queued.exception.code, 'resource:timeout')
+            self.assertEqual(queued.exception.outcome, 'not_sent')
+        finally:
+            await lease.release()
 
     async def test_plugin_registration(self):
         from stylelora.llm import register_adapter, adapter_for, LlmReply

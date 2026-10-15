@@ -29,7 +29,7 @@ class AestheticScorer(Protocol):
 
 
 class CleanExecutor(Protocol):
-    async def clean(self, value, *, role, cancel): ...
+    async def clean(self, value, *, role, cancel, profile): ...
 
 
 def capabilities():

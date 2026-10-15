@@ -32,7 +32,7 @@ def refused(decision):
     return RatingDecision(highest((decision.rating,'questionable')),True,'refused_nsfw','nsfw')
 
 
-async def resolve_rating(entry, policy, llm, *, keywords=None, ratings=None, binding=None):
+async def resolve_rating(entry, policy, llm, *, keywords=None, ratings=None, binding=None, cancel=None):
     decision=classify_rating(entry,policy,keywords=keywords,ratings=ratings)
     if decision.rating is not None or not policy.use_rating_model:
         return decision
@@ -41,7 +41,7 @@ async def resolve_rating(entry, policy, llm, *, keywords=None, ratings=None, bin
     schema={'type':'object','properties':{'rating':{'enum':list(RATINGS)+['uncertain']}},'required':['rating'],'additionalProperties':False}
     reply=await llm.complete_json(LlmRequest(str(uuid4()),binding,
         'Classify content rating as general, sensitive, questionable, explicit or uncertain. Return only JSON.',
-        {'tags':list(entry.tags),'natural_language':entry.natural_language},schema),repair_limit=1)
+        {'tags':list(entry.tags),'natural_language':entry.natural_language},schema,cancel=cancel),repair_limit=1)
     rating=reply.value.get('rating'); require(rating in (*RATINGS,'uncertain'),'llm:schema_contract')
     if rating=='uncertain': return decision
     return RatingDecision(rating,True,'rating_model','nsfw' if rating in ('questionable','explicit') else 'normal')

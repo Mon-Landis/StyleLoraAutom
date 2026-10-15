@@ -14,6 +14,8 @@ from .events import EventBus
 from .scope import resolve_in_snapshot, scope_from_json
 from .types import ImageContext, ImageInput, CancelToken, ExecutionResult, Unavailable
 from stylelora.vision.evidence import evidence_in_snapshot
+from stylelora.modes.profiles import get_profile, freeze_profile, profile_from_snapshot, ProfileError
+from stylelora.prompts.types import plain
 
 
 def context_in_snapshot(project, db, identity, snapshot, cancel):
@@ -92,8 +94,14 @@ class JobRunner:
             if job.executor not in self.snapshots:
                 raise Unavailable('snapshot_unavailable')
             snapshot = json.loads(json.dumps(self.snapshots[job.executor], allow_nan=False))
+            snapshot.setdefault('params', {})['mode_profile'] = plain(freeze_profile(get_profile(self.project.metadata.mode)))
+            snapshot['params']['mode_trigger'] = self.project.metadata.trigger_word
         else:
             snapshot = job.config_snapshot_json
+        try:
+            profile_from_snapshot(snapshot)
+        except ProfileError as exc:
+            raise Unavailable(exc.code) from exc
         if hasattr(executor, 'validate'):
             await executor.validate(snapshot)
         if hasattr(executor, 'availability'):
@@ -117,10 +125,16 @@ class JobRunner:
         if action not in ('pause', 'resume', 'cancel'):
             raise ValueError('action_invalid')
         job = self.get(job_id)
-        target = {'pause': 'paused', 'resume': 'running', 'cancel': 'canceled'}[action]
+        if action in ('pause', 'cancel') and job.status == 'pending':
+            job = await self.prepare(job, self.executors[job.executor])
+        target = {'pause': 'paused', 'resume': 'running', 'cancel': 'paused'}[action]
         if job.status == target:
             return job
         if action == 'resume':
+            if any(v.get('phase') in ('inflight', 'unknown') for v in job.progress_json.get('dispatch', {}).values()):
+                raise StateConflict('Remote dispatch requires reconciliation')
+            if any(v.get('reason') == 'llm:outcome_unknown' for v in job.progress_json.get('outcomes', {}).values()):
+                raise StateConflict('Remote outcomes require reconciliation')
             if job.status != 'paused' or job_id in self.active or self.predecessor_blocked(job):
                 raise StateConflict('Job cannot resume')
             try:
@@ -129,8 +143,6 @@ class JobRunner:
                 return job
         result = (await self.write(lambda db: commands.transition_job(db, job_id,
             expected=job.status, target=target))).value
-        if action == 'cancel' and job_id in self.controls:
-            self.controls[job_id].cancel()
         self.emit(result, 'job.'+target)
         return result
 
@@ -138,6 +150,9 @@ class JobRunner:
         def work(db):
             current = jobs.get_job(db, job_id)
             if current.status == 'canceled':
+                return current, False
+            if (current.progress_json.get('dispatch', {}).get(str(outcome.image_id), {}).get('phase') == 'unknown'
+                    and outcome.reason != 'llm:outcome_unknown'):
                 return current, False
             value = outcome
             if context is not None and outcome.kind == 'done':
@@ -223,11 +238,18 @@ class JobRunner:
                         elif job.mode != 'all' and hit and all(key in job.config_snapshot_json.get('allowed_cache_keys', {}).get(str(identity), {}).get(kind, []) for (_, kind), key in keys.items()):
                             outcome = JobOutcome(identity, 'skipped', reason='cache_hit', annotation_ids=hit, run_token=run_token)
                         else:
+                            if job.executor == 'llm_vision':
+                                try:
+                                    await self.write(lambda db: jobs.dispatch_receipt(db, job_id, identity, 'inflight'))
+                                except StateConflict:
+                                    break
                             try:
                                 result = await executor.execute(context)
                             except asyncio.CancelledError:
                                 break
                             except Unavailable as exc:
+                                if job.executor == 'llm_vision':
+                                    await self.write(lambda db: jobs.dispatch_receipt(db, job_id, identity, 'unknown'))
                                 if exc.reason == 'rating_conflict':
                                     result = ExecutionResult('failed', exc.reason)
                                 else:
@@ -236,12 +258,16 @@ class JobRunner:
                             except LlmFailure as exc:
                                 from stylelora.vision.executor import CONFIG_ERRORS
                                 if exc.code in CONFIG_ERRORS:
+                                    if job.executor == 'llm_vision':
+                                        await self.write(lambda db: jobs.dispatch_receipt(db, job_id, identity, 'not_sent' if exc.outcome == 'not_sent' else 'unknown'))
                                     await self.control(job_id, 'pause')
                                     break
-                                result = ExecutionResult('failed', exc.code)
+                                result = ExecutionResult('failed', 'llm:outcome_unknown' if exc.outcome == 'unknown' else exc.code)
                             except Exception:
                                 result = ExecutionResult('failed', 'decode_failed')
-                            if token.canceled or self.get(job_id).status == 'canceled':
+                            if (token.canceled and result.reason != 'llm:outcome_unknown') or self.get(job_id).status == 'canceled':
+                                if job.executor == 'llm_vision':
+                                    await self.write(lambda db: jobs.dispatch_receipt(db, job_id, identity, 'unknown'))
                                 break
                             expected_rating = result.rating if job.executor == 'llm_vision' else context.rating
                             values = tuple(replace(value, job_id=job_id) for value in result.annotations)
@@ -259,7 +285,10 @@ class JobRunner:
                         self.emit(committed, 'job.image_completed', identity,
                                   committed.progress_json['outcomes'][str(identity)]['reason'])
                 final = self.get(job_id)
-                if final.status in ('running', 'paused') and final.done_count+final.failed_count+final.skipped_count == final.total:
+                unknown = any(v.get('reason') == 'llm:outcome_unknown' for v in final.progress_json.get('outcomes', {}).values())
+                if unknown and final.status == 'running':
+                    final = await self.control(job_id, 'pause')
+                if not unknown and final.status in ('running', 'paused') and final.done_count+final.failed_count+final.skipped_count == final.total:
                     final = (await self.write(lambda db: commands.transition_job(db, job_id, expected=final.status, target='done'))).value
                     self.emit(final, 'job.done')
                 return final

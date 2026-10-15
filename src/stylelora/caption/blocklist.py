@@ -31,6 +31,7 @@ class BlocklistSnapshot:
     artists: frozenset[str] = frozenset()
     known: frozenset[str] = frozenset()
     unverifiable: tuple[str, ...] = ()
+    policy: str = 'style-content-v1'
 
 
 @dataclass(frozen=True)
@@ -44,7 +45,11 @@ class Hit:
     action: str = 'warn'
 
 
-def build_blocklist(style_prompt, catalog, *, mode='warn'):
+def build_blocklist(style_prompt, catalog, *, mode='warn', profile=None):
+    from stylelora.modes.profiles import get_profile
+    profile = profile or get_profile()
+    if not profile.enabled or profile.blocklist_policy != 'style-content-v1':
+        raise ValidationError('profile:unavailable')
     if mode not in ('warn','remove'):
         raise ValidationError('blocklist:invalid_mode')
     tokens = tokenize_prompt(style_prompt,catalog=catalog)
@@ -59,6 +64,8 @@ def build_blocklist(style_prompt, catalog, *, mode='warn'):
 
 
 def _classify(key, snapshot):
+    if snapshot.policy != 'style-content-v1':
+        raise ValidationError('profile:unavailable')
     if key in snapshot.style_tags:
         return 'style_prompt','exact'
     if key in snapshot.artists or re.match(r'(?:@|artist:|by |art by |drawn by |illustrated by |in the style of |inspired by )',key):
@@ -85,6 +92,8 @@ def _classify(key, snapshot):
 
 
 def check_blocklist(tags, nl, snapshot):
+    if snapshot.policy != 'style-content-v1':
+        raise ValidationError('profile:unavailable')
     result = []
     for tag in tags:
         key = normalize_tag(tag.tag)

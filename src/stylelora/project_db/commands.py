@@ -251,6 +251,8 @@ def commit_job_outcome(db: WriteSession, job_id: int, outcome: JobOutcome) -> Wr
             ids.append(identity)
             keys.append(annotation.cache_key)
     progress['outcomes'][str(outcome.image_id)] = {'kind':outcome.kind,'reason':outcome.reason,'annotation_ids':ids,'cache_keys':keys,'digest':signature}
+    if str(outcome.image_id) in progress.get('dispatch', {}):
+        progress['dispatch'][str(outcome.image_id)]['phase'] = 'unknown' if outcome.reason == 'llm:outcome_unknown' else 'settled'
     counts = {kind:sum(o['kind']==kind for o in progress['outcomes'].values()) for kind in ('done','failed','skipped')}
     cas(db,'jobs',job_id,{'progress_json':dumps(progress),'done_count':counts['done'],'failed_count':counts['failed'],'skipped_count':counts['skipped'],'updated_at':now(job.updated_at)}, {'updated_at':job.updated_at,'status':job.status})
     return WriteResult(jobs.get_job(db,job_id),True)

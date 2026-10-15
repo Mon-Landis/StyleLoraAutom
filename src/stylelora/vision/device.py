@@ -39,11 +39,11 @@ def probe_device(*, nvml=None, smi=None, providers=None):
     return DeviceInfo('cuda', total, free)
 
 
-def plan_batch(device, manifest, requested):
+def plan_batch(device, manifest, requested, *, available_bytes=None, max_batch=4):
     if type(requested) is not int or requested < 1:
         raise ValueError('batch_invalid')
     profile = manifest.tensor_schema.get('memory_per_image')
     if device.provider == 'cpu' or not profile or not device.free_bytes or not device.total_bytes:
         return 1
-    usable = device.free_bytes - max(1024**3, device.total_bytes//5)
-    return max(1, min(requested, 4, int(usable//profile)))
+    usable = available_bytes if available_bytes is not None else device.free_bytes - max(1024**3, device.total_bytes//5)
+    return max(0, min(requested, max_batch, int(usable//profile)))

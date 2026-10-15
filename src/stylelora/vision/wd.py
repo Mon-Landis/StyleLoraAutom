@@ -2,12 +2,14 @@ import asyncio
 import csv
 from dataclasses import asdict, dataclass
 import math
+import time
 from PIL import Image, ImageOps
 from stylelora.executors.cache import cache_keys
 from stylelora.executors.types import ExecutionResult, Unavailable
 from stylelora.project_db.types import AnnotationInput, Tag
 from stylelora.tagging.normalization import normalize_tag
 from .device import DeviceInfo, probe_device, plan_batch
+from stylelora.resources.compute import ComputeDemand, shared_compute, run_worker
 
 
 @dataclass(frozen=True)
@@ -83,11 +85,13 @@ def select_tags(scores, labels, config):
 class WdExecutor:
     name = 'wd'
 
-    def __init__(self, config, manifest, store, *, infer=None, device_probe=probe_device):
+    def __init__(self, config, manifest, store, *, infer=None, device_probe=probe_device, compute=None):
         self.config, self.manifest, self.store = config, manifest, store
         self.infer, self.device_probe = infer, device_probe
         self._worker = asyncio.Lock()
         self._sessions = {}
+        self.compute = compute
+        self._registered = set()
 
     def availability(self):
         try:
@@ -144,6 +148,7 @@ class WdExecutor:
         with (directory/label_file).open(encoding='utf-8-sig', newline='') as stream:
             labels = list(csv.DictReader(stream))
         result = []
+        compute = self.compute or shared_compute()
         async with self._worker:
             remaining = list(images)
             while remaining:
@@ -153,21 +158,48 @@ class WdExecutor:
                 if self.manifest.tensor_schema.get('batch', 1) != 'dynamic':
                     batch = 1
                 provider = device.provider
+                if (not device.total_bytes or device.free_bytes is None or
+                        not self.manifest.tensor_schema.get('memory_per_image') or
+                        'resident_bytes' not in self.manifest.tensor_schema):
+                    provider, batch = 'cpu', 1
+                batch = max(1, batch)
                 while True:
-                    selected = remaining[:batch]
-                    tensors = await asyncio.to_thread(lambda: [preprocess(i.path, self.manifest.tensor_schema) for i in selected])
+                    cancel.raise_if_cancelled()
+                    demand = ComputeDemand(str(id(self)), 'gpu:0' if provider == 'cuda' else 'cpu', 'onnx',
+                        self.manifest.digest, self.manifest.tensor_schema.get('resident_bytes', 0),
+                        self.manifest.tensor_schema.get('memory_per_image', 0), min(batch, len(remaining)))
+                    # Device information is observed by the shared controller at admission.
+                    if self.compute is None:
+                        compute.probe = self.device_probe
+                    lease = await compute.acquire(demand, cancel=cancel, deadline=time.monotonic()+300)
+                    selected = remaining[:lease.actual_batch]
+                    batch = lease.actual_batch
                     try:
-                        scores = await asyncio.to_thread(self._infer, tensors, provider)
+                        tensors = await run_worker(lambda: [preprocess(i.path, self.manifest.tensor_schema) for i in selected])
+                        cancel.raise_if_cancelled()
+                        scores = await run_worker(lambda: self._infer(tensors, provider))
                         break
                     except Exception as exc:
                         # Exception text stays local; only fixed diagnostics leave.
                         oom = isinstance(exc, MemoryError) or 'out of memory' in str(exc).lower()
+                        cancel.raise_if_cancelled()
                         if provider == 'cuda' and oom and batch > 1:
                             batch = max(1, batch//2)
                         elif provider == 'cuda':
                             provider, batch = 'cpu', 1
                         else:
                             raise Unavailable('oom' if oom else 'inference_failed') from exc
+                    finally:
+                        await lease.release()
+                        original = lease.provider
+                        if original != provider and original in self._sessions:
+                            del self._sessions[original]
+                            if original in self._registered:
+                                compute.release_resident(self.manifest.digest, demand.device_id)
+                                self._registered.remove(original)
+                        elif original in self._sessions and original not in self._registered:
+                            compute.register_resident(self.manifest.digest, demand.device_id, demand.resident_bytes)
+                            self._registered.add(original)
                 cancel.raise_if_cancelled()
                 if len(scores) != len(selected):
                     raise ValueError('output_schema')
@@ -182,6 +214,14 @@ class WdExecutor:
                     result.append(TaggerResult(tags, config.model, params))
                 del remaining[:len(selected)]
         return tuple(result)
+
+    async def unload(self):
+        async with self._worker:
+            self._sessions.clear()
+            compute = self.compute or shared_compute()
+            for provider in self._registered:
+                compute.release_resident(self.manifest.digest, 'gpu:0' if provider == 'cuda' else 'cpu')
+            self._registered.clear()
 
     async def execute(self, context):
         try:

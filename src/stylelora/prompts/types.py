@@ -75,9 +75,10 @@ class FeatureDictionary(Checked):
 class PromptDictionary(Checked):
     dictionary_id: str
     name: str
-    schema_version: int = 1
+    schema_version: int = 2
     entries: tuple[PromptEntry, ...] = ()
     revision: int = 1
+    category: str = 'full_content'
 
 
 @dataclass(frozen=True)

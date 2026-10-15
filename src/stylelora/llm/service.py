@@ -19,7 +19,8 @@ from .images import encode_image
 from .json_output import repair_json_text, validate_json_reply
 from .secrets import SecretStore
 from .types import (CancelToken, DEFAULT_TIERS, ImageInput, JsonReply, LlmFailure,
-                    LlmReply, LlmRequest, ModelConfig, RepairBudget, RoleBinding)
+                     LlmReply, LlmRequest, ModelConfig, RepairBudget, RoleBinding)
+from stylelora.resources.network import NetworkController, NetworkPolicy
 
 
 def _utc():
@@ -46,12 +47,12 @@ def capability_fixture() -> bytes:
 class LlmService:
     def __init__(self, config: ConfigStore | None = None, secrets: SecretStore | None = None,
                  *, concurrency: int = 2, transport=None, validator=None,
-                 audit_path: Path | None = None, backoff_s: float = 1.0):
+                 audit_path: Path | None = None, backoff_s: float = 1.0, network=None):
         if concurrency < 1 or backoff_s < 0:
             raise ValueError('Invalid service limits')
         self.config = config or ConfigStore()
         self.secrets = secrets or SecretStore()
-        self._gate = asyncio.Semaphore(concurrency)
+        self.network = network or NetworkController(NetworkPolicy(global_limit=concurrency, backoff_base_s=backoff_s))
         self._transport = transport
         self._validator = validator
         self._audit_path = Path(audit_path) if audit_path is not None else self.config.path.with_suffix('.audit.jsonl')
@@ -59,8 +60,6 @@ class LlmService:
         self._backoff = backoff_s
         self._active = {}
         self._frozen = {}
-        self._cursor = {}
-        self._cooldowns = {}
 
     def _adapter(self, protocol):
         return JsonAdapter(protocol, self._transport) if self._transport and protocol in (
@@ -115,20 +114,6 @@ class LlmService:
             raise LlmFailure('llm:retry_deadline', outcome='unknown' if sent else 'not_sent')
         await self._wait(asyncio.sleep(seconds), internal, external, sent=sent)
 
-    def _select_token(self, endpoint):
-        refs = endpoint.token_refs
-        if not refs:
-            raise LlmFailure('llm:secret_missing', outcome='not_sent')
-        cursor = self._cursor.get(endpoint.endpoint_id, 0) % len(refs)
-        now = time.monotonic()
-        for offset in range(len(refs)):
-            index = (cursor + offset) % len(refs)
-            if self._cooldowns.get((endpoint.endpoint_id, refs[index]), 0) <= now:
-                self._cursor[endpoint.endpoint_id] = (index + 1) % len(refs)
-                return index, 0
-        earliest = min(self._cooldowns[(endpoint.endpoint_id, ref)] for ref in refs)
-        return None, max(0, earliest - now)
-
     def _audit(self, request, endpoint, index, attempt, tier, *, code, outcome, duration=0,
                attempt_id=None, credentials=()):
         # Strict allowlist; never serialize DTOs, errors, bodies, URLs or token references.
@@ -149,7 +134,7 @@ class LlmService:
             self.audit_warnings += 1
         return row['attempt_id']
 
-    async def complete(self, request: LlmRequest) -> LlmReply:
+    async def complete(self, request: LlmRequest, *, _deadline=None) -> LlmReply:
         if request.request_id in self._active:
             raise LlmFailure('llm:duplicate_request', outcome='not_sent')
         if (len(request.images) > 1 or (request.images and request.image_input)
@@ -158,18 +143,12 @@ class LlmService:
             raise LlmFailure('llm:request_invalid', outcome='not_sent')
         internal = CancelToken()
         self._active[request.request_id] = internal
-        acquired = False
+        lease = None
         sent = False
-        async def acquire():
-            nonlocal acquired
-            await self._gate.acquire()
-            acquired = True
-
         try:
             self._check_cancel(internal, request.cancel)
             endpoint = self._endpoint(request.binding)
-            await self._wait(acquire(), internal, request.cancel)
-            deadline = time.monotonic() + request.timeout_s * (request.transport_retry_limit + 1)
+            deadline = _deadline if _deadline is not None else time.monotonic() + request.timeout_s * (request.transport_retry_limit + 1)
             tiers = request.tiers or DEFAULT_TIERS
             if (len(tiers) > 3 or not tiers or any(t.max_pixels > 2_000_000 for t in tiers)
                     or any(a.max_pixels <= b.max_pixels for a, b in zip(tiers, tiers[1:]))):
@@ -190,10 +169,18 @@ class LlmService:
                     pass
             for attempt in range(request.transport_retry_limit + 1):
                 self._check_cancel(internal, request.cancel, sent)
-                while index is None:
-                    index, wait = self._select_token(endpoint)
-                    if index is None:
-                        await self._pause(wait, deadline, internal, request.cancel, sent)
+                async def acquire():
+                    nonlocal lease
+                    refs = endpoint.token_refs if index is None else (endpoint.token_refs[index],)
+                    lease = await self.network.acquire(endpoint.endpoint_id, refs,
+                                                       cancel=internal, deadline=deadline)
+                try:
+                    await self._wait(acquire(), internal, request.cancel, sent=sent)
+                except LlmFailure as exc:
+                    if sent and exc.code == 'resource:timeout':
+                        raise LlmFailure('llm:retry_deadline', outcome='unknown') from None
+                    raise
+                index = endpoint.token_refs.index(lease.token_ref)
                 token = self.secrets.resolve_secret(endpoint.token_refs[index])
                 credentials.append(token)
                 timeout = min(request.timeout_s, deadline - time.monotonic())
@@ -222,6 +209,8 @@ class LlmService:
                     return replace(reply, text=text, usage=usage or None, request_id=request.request_id, attempts=attempt + 1,
                                    actual_tier=image.tier if image else None)
                 except LlmFailure as exc:
+                    await lease.release()
+                    lease = None
                     self._audit(request, endpoint, index, attempt + 1, image.tier if image else None,
                                 code=exc.code, outcome=exc.outcome,
                                 duration=int((time.monotonic() - start) * 1000),
@@ -229,8 +218,9 @@ class LlmService:
                     if not isinstance(exc, TransportFailure):
                         raise
                     if exc.status == 429:
-                        cooldown = max(_retry_after(exc.retry_after), self._backoff * 2 ** attempt)
-                        self._cooldowns[(endpoint.endpoint_id, endpoint.token_refs[index])] = time.monotonic() + cooldown
+                        retry_after = _retry_after(exc.retry_after)
+                        self.network.cooldown(endpoint.endpoint_id, endpoint.token_refs[index],
+                                              retry_after_s=retry_after, attempt=attempt)
                         index = None
                     if attempt >= request.transport_retry_limit:
                         raise
@@ -253,13 +243,14 @@ class LlmService:
         except Exception:
             raise LlmFailure('llm:internal_error', outcome='unknown' if sent else 'not_sent') from None
         finally:
-            if acquired:
-                self._gate.release()
+            if lease is not None:
+                await lease.release()
             self._active.pop(request.request_id, None)
 
     async def complete_json(self, request: LlmRequest, *, repair_limit: int = 1) -> JsonReply:
         budget = request.repair_budget or RepairBudget(limit=min(1, max(0, repair_limit)))
-        reply = await self.complete(request)
+        deadline = time.monotonic() + request.timeout_s * (request.transport_retry_limit + 1)
+        reply = await self.complete(request, _deadline=deadline)
         total_attempts = reply.attempts
         repair_used = False
         while True:
@@ -287,19 +278,18 @@ class LlmService:
                                          'schema': dict(request.response_schema)},
                                 image_input=None, images=(image,) if image else request.images,
                                 timeout_policy='fail_unknown', repair_budget=budget)
-                reply = await self.complete(fixed)
+                reply = await self.complete(fixed, _deadline=deadline)
                 total_attempts += reply.attempts
                 repair_used = True
 
     async def probe_models(self, endpoint_id: str) -> tuple[ModelConfig, ...]:
         endpoint = self.config.endpoint(endpoint_id)
         try:
-            index, wait = self._select_token(endpoint)
-            if index is None:
-                return endpoint.models
-            async with self._gate:
+            lease = await self.network.acquire(endpoint.endpoint_id, endpoint.token_refs,
+                                               cancel=CancelToken(), deadline=time.monotonic()+300)
+            async with lease:
                 models = await asyncio.wait_for(self._adapter(endpoint.protocol).list_models(
-                    endpoint, self.secrets.resolve_secret(endpoint.token_refs[index])), 300)
+                    endpoint, self.secrets.resolve_secret(lease.token_ref)), 300)
         except (LlmFailure, asyncio.TimeoutError):
             return endpoint.models
         # Retain configured models absent from provider discovery.
