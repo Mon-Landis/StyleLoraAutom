@@ -53,6 +53,11 @@
 
   --size-icon: 1em;
   --size-nav-width: 168px;
+  --size-nav-width-collapsed: 44px;
+  --size-popover-width: 380px;
+  --size-popover-max-height: 60vh;
+  --size-preview-min: 200px;
+  --size-preview-basis: 45vh;
   --size-topbar-height: 36px;
   --size-statusbar-height: 24px;
   --size-detail-width: 380px;

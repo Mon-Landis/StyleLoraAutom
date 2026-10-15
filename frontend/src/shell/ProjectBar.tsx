@@ -4,14 +4,20 @@ import { ApiError } from '../api/errors';
 import { closeProject, createProject, currentProject, listKnownProjects, openProject, pickFolder } from '../api/more';
 import { waitOperation } from '../lib/operation';
 import { useApp } from '../state/app';
+import { useSaveStatus } from '../state/saveStatus';
 import { Button, Field } from '../ui/primitives';
 import { Dialog } from '../ui/Dialog';
+import { Popover } from '../ui/Popover';
+import { Icon } from '../ui/slots';
 
+/** 顶栏项目块：「打开项目」按钮 + 项目名（右下角对齐一行保存状态小字）。 */
 export function ProjectBar() {
   const qc = useQueryClient();
   const { projectId, projectName, projectVersion, setProject } = useApp();
+  const save = useSaveStatus();
   const known = useQuery({ queryKey: ['known-projects'], queryFn: listKnownProjects });
   const cur = useQuery({ queryKey: ['current-project'], queryFn: currentProject });
+  const [menu, setMenu] = useState(false);
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState('');
   const [trigger, setTrigger] = useState('');
@@ -19,7 +25,7 @@ export function ProjectBar() {
 
   useEffect(() => {
     const p = cur.data;
-    if (p) setProject(p.project_id, p.version, p.metadata?.name ?? p.project_id);
+    if (p) setProject(p.project_id, p.version, p.metadata?.name ?? p.project_id, p.metadata?.mode ?? null);
   }, [cur.data, setProject]);
 
   const fail = (e: unknown) =>
@@ -37,6 +43,7 @@ export function ProjectBar() {
   };
   const open = async (body: { grant_id?: string; known_id?: string }) => {
     setMsg('');
+    setMenu(false);
     try {
       await waitOperation(await openProject(body));
       await refresh();
@@ -51,26 +58,40 @@ export function ProjectBar() {
       await refresh();
     } catch (e) { fail(e); }
   };
+  const close = () => {
+    if (!projectId || !projectVersion) return;
+    setMenu(false);
+    void closeProject(projectId, projectVersion).then(() => { setProject(null, null, ''); void refresh(); }).catch(fail);
+  };
 
   return (
     <div className="projectbar">
-      {projectId ? (
-        <>
-          <span className="projectbar__name" title={projectId}>{projectName}</span>
-          <Button variant="ghost" onClick={() => {
-            if (projectVersion) void closeProject(projectId, projectVersion).then(() => { setProject(null, null, ''); void refresh(); }).catch(fail);
-          }}>关闭</Button>
-        </>
-      ) : (
-        <>
-          <select aria-label="最近项目" defaultValue="" onChange={(e) => e.target.value && void open({ known_id: e.target.value })}>
-            <option value="">最近项目…</option>
-            {(known.data?.items ?? []).map((k) => <option key={k.known_id} value={k.known_id}>{k.display_name}</option>)}
-          </select>
-          <Button onClick={() => void grantFromPicker('project_open').then((g) => open({ grant_id: g })).catch(fail)}>打开…</Button>
-          <Button variant="primary" onClick={() => setCreating(true)}>新建</Button>
-        </>
-      )}
+      <Popover
+        open={menu}
+        onClose={() => setMenu(false)}
+        label="项目菜单"
+        trigger={
+          <Button aria-haspopup="dialog" aria-expanded={menu} onClick={() => setMenu((v) => !v)}>
+            <Icon name="project-open" />打开项目
+          </Button>
+        }
+      >
+        <ul className="menu">
+          {(known.data?.items ?? []).map((k) => (
+            <li key={k.known_id}>
+              <button type="button" className="menu__item" onClick={() => void open({ known_id: k.known_id })}>{k.display_name}</button>
+            </li>
+          ))}
+          {(known.data?.items.length ?? 0) === 0 && <li className="menu__hint">没有最近项目</li>}
+          <li><button type="button" className="menu__item" onClick={() => void grantFromPicker('project_open').then((g) => open({ grant_id: g })).catch(fail)}>选择目录…</button></li>
+          <li><button type="button" className="menu__item" onClick={() => { setMenu(false); setCreating(true); }}>新建项目…</button></li>
+          {projectId && <li><button type="button" className="menu__item menu__item--danger" onClick={close}>关闭当前项目</button></li>}
+        </ul>
+      </Popover>
+      <div className="projectbar__title">
+        <span className="projectbar__name" title={projectId ?? undefined}>{projectId ? projectName : '—'}</span>
+        <small className={`projectbar__save projectbar__save--${save.tone}`} role="status" aria-live="polite">{save.label}</small>
+      </div>
       {msg && <span className="projectbar__msg" role="alert">{msg}</span>}
       {creating && (
         <Dialog title="新建项目" onClose={() => setCreating(false)}>

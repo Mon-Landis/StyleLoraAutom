@@ -6,15 +6,20 @@ import type { ComponentType, ReactNode } from 'react';
  */
 export type IconName =
   | 'keep' | 'reject' | 'unreviewed' | 'search' | 'refresh' | 'close' | 'play'
-  | 'undo' | 'export' | 'warn' | 'image' | 'prev' | 'next' | 'plus';
+  | 'undo' | 'export' | 'warn' | 'image' | 'prev' | 'next' | 'plus'
+  | 'nav-workbench' | 'nav-sources' | 'nav-prompts' | 'settings' | 'project' | 'project-open'
+  | 'sidebar-collapse' | 'sidebar-expand' | 'tasks' | 'theme';
 
 const glyphs: Record<IconName, string> = {
   keep: '✓', reject: '✕', unreviewed: '○', search: '⌕', refresh: '↻', close: '×', play: '▶',
   undo: '↶', export: '⇪', warn: '!', image: '▣', prev: '‹', next: '›', plus: '+',
+  'nav-workbench': '▦', 'nav-sources': '☰', 'nav-prompts': '✎', settings: '⚙', project: 'ⓘ', 'project-open': '▤',
+  'sidebar-collapse': '«', 'sidebar-expand': '»', tasks: '≣', theme: '◐',
 };
 
 export interface SlotSet {
   Icon: ComponentType<{ name: IconName }>;
+  Logo: ComponentType;
   Empty: ComponentType<{ title: string; hint?: ReactNode }>;
   Loading: ComponentType<{ label?: string }>;
   Unsupported: ComponentType<{ feature: string }>;
@@ -23,6 +28,7 @@ export interface SlotSet {
 
 export const slots: SlotSet = {
   Icon: ({ name }) => <span className="icon" aria-hidden="true">{glyphs[name]}</span>,
+  Logo: () => <span className="logo" aria-hidden="true"><slots.Deco kind="pixel" /></span>,
   Empty: ({ title, hint }) => (
     <div className="empty" role="status">
       <div className="empty__title">{title}</div>
@@ -47,6 +53,7 @@ export function registerSlots(next: Partial<SlotSet>): void {
 }
 
 export const Icon = (p: { name: IconName }) => <slots.Icon {...p} />;
+export const Logo = () => <slots.Logo />;
 export const Empty = (p: { title: string; hint?: ReactNode }) => <slots.Empty {...p} />;
 export const Loading = (p: { label?: string }) => <slots.Loading {...p} />;
 export const Unsupported = (p: { feature: string }) => <slots.Unsupported {...p} />;

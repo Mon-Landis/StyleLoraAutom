@@ -38,6 +38,15 @@ export function Banner({ tone = 'info', children }: { tone?: 'info' | 'warning' 
   return <div className={`banner banner--${tone}`} role={tone === 'danger' ? 'alert' : 'status'}>{children}</div>;
 }
 
+/** 弱化的统计小字行：[标签, 数值] 列表。 */
+export function StatsLine({ items }: { items: Array<[string, number | string]> }) {
+  return (
+    <span className="stats">
+      {items.map(([k, v]) => <span key={k} className="stats__item">{k} <b>{v}</b></span>)}
+    </span>
+  );
+}
+
 export function ProgressBar({ value, max }: { value: number; max: number | null }) {
   const pct = max ? Math.min(100, Math.round((value / max) * 100)) : 0;
   return (

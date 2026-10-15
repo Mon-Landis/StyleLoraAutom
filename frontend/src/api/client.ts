@@ -11,6 +11,8 @@ export const getToken = (): string | null => token;
 export const hooks: {
   onUnauthorized?: () => void;
   onNetwork?: (reachable: boolean) => void;
+  /** 非 GET 请求开始(+1)/结束(-1)，用于推导「保存中」。 */
+  onWrite?: (delta: 1 | -1) => void;
 } = {};
 
 type QueryValue = string | number | boolean | undefined | null | Array<string | number>;
@@ -59,6 +61,8 @@ function headersFor(method: string, o: ReqOpts): Record<string, string> {
 
 async function send(method: string, path: string, o: ReqOpts): Promise<Response> {
   let res: Response;
+  const isWrite = method !== 'GET';
+  if (isWrite) hooks.onWrite?.(1);
   try {
     res = await fetch(buildUrl(path, o.query), {
       method,
@@ -70,6 +74,8 @@ async function send(method: string, path: string, o: ReqOpts): Promise<Response>
     if (e instanceof DOMException && e.name === 'AbortError') throw e;
     hooks.onNetwork?.(false);
     throw new NetworkError(e);
+  } finally {
+    if (isWrite) hooks.onWrite?.(-1);
   }
   hooks.onNetwork?.(true);
   if (res.status === 401 && !o.anonymous) hooks.onUnauthorized?.();

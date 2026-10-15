@@ -12,13 +12,15 @@ interface AppStore {
   projectId: string | null;
   projectVersion: string | null;
   projectName: string;
+  /** metadata.mode；后端尚未提供时为 null（显示按 style 兜底，见 lib/projectMode.ts）。 */
+  projectMode: string | null;
   filter: Partial<ImageFilter>;
   selected: Set<number>;
   activeId: number | null;
   setTheme: (t: Theme) => void;
   setDensity: (d: Density) => void;
   setStage: (s: Stage) => void;
-  setProject: (id: string | null, version?: string | null, name?: string) => void;
+  setProject: (id: string | null, version?: string | null, name?: string, mode?: string | null) => void;
   setFilter: (f: Partial<ImageFilter>) => void;
   setActive: (id: number | null) => void;
   setSelected: (s: Set<number>) => void;
@@ -32,14 +34,15 @@ export const useApp = create<AppStore>((set, get) => ({
   projectId: null,
   projectVersion: null,
   projectName: '',
+  projectMode: null,
   filter: {},
   selected: new Set(),
   activeId: null,
   setTheme: (theme) => set({ theme }),
   setDensity: (density) => set({ density }),
   setStage: (stage) => set({ stage }),
-  setProject: (projectId, projectVersion = null, projectName = '') =>
-    set({ projectId, projectVersion, projectName, selected: new Set(), activeId: null, filter: {} }),
+  setProject: (projectId, projectVersion = null, projectName = '', projectMode = null) =>
+    set({ projectId, projectVersion, projectName, projectMode, selected: new Set(), activeId: null, filter: {} }),
   setFilter: (filter) => set({ filter, selected: new Set() }),
   setActive: (activeId) => set({ activeId }),
   setSelected: (selected) => set({ selected }),

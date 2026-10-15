@@ -3,7 +3,9 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { hooks } from './api/client';
 import { boot, redeem } from './api/session';
 import { useConnection } from './state/connection';
-import { TopBar } from './shell/TopBar';
+import { usePendingWrites } from './state/writes';
+import { Shell } from './shell/Shell';
+import { ProjectInfoPage } from './pages/ProjectInfoPage';
 import { Workbench } from './pages/Workbench';
 import { SourcesPage } from './pages/SourcesPage';
 import { PromptsPage } from './pages/PromptsPage';
@@ -21,6 +23,7 @@ export function App() {
   useEffect(() => {
     hooks.onUnauthorized = () => dispatch('unauthorized');
     hooks.onNetwork = (ok) => dispatch(ok ? 'rest_ok' : 'rest_fail');
+    hooks.onWrite = (d) => usePendingWrites.getState().bump(d);
     void boot().then((r) => {
       if (r === 'ok') {
         dispatch('rest_ok');
@@ -56,18 +59,16 @@ export function App() {
       </div>
     );
   return (
-    <div className="shell">
-      <TopBar />
-      <main className="shell__main">
-        <Routes>
-          <Route path="/" element={<Navigate to="/workbench" replace />} />
-          <Route path="/workbench" element={<Workbench />} />
-          <Route path="/sources" element={<SourcesPage />} />
-          <Route path="/prompts" element={<PromptsPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-          <Route path="*" element={<Navigate to="/workbench" replace />} />
-        </Routes>
-      </main>
-    </div>
+    <Shell>
+      <Routes>
+        <Route path="/" element={<Navigate to="/workbench" replace />} />
+        <Route path="/workbench" element={<Workbench />} />
+        <Route path="/sources" element={<SourcesPage />} />
+        <Route path="/prompts" element={<PromptsPage />} />
+        <Route path="/project" element={<ProjectInfoPage />} />
+        <Route path="/settings" element={<SettingsPage />} />
+        <Route path="*" element={<Navigate to="/workbench" replace />} />
+      </Routes>
+    </Shell>
   );
 }

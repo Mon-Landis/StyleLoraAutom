@@ -99,7 +99,8 @@ export interface ExportView {
 
 export interface ProjectView {
   project_id: string;
-  metadata: { name?: string; trigger_word?: string };
+  /** mode：后端尚未提供，缺省按 style（见 lib/projectMode.ts）。 */
+  metadata: { name?: string; trigger_word?: string; mode?: string };
   version: string;
 }
 

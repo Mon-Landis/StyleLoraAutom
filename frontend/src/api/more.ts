@@ -60,6 +60,8 @@ export interface PromptTask {
   name?: string;
   status?: string;
   version?: string;
+  completed?: number;
+  total?: number;
 }
 export const listPromptTasks = () => get<Page<PromptTask>>('/api/prompt-tasks', { query: { limit: 50 } }).then((r) => r.data);
 export interface SamplingRequest {
@@ -88,6 +90,8 @@ export const previewExport = (pid: string, schemeId: number) =>
   post<Operation>(`${P(pid)}/exports/preview`, { scheme_id: schemeId }).then((r) => r.data);
 export const runExport = (pid: string, schemeId: number, p: ExportPreview) =>
   post<ExportView>(`${P(pid)}/exports`, { scheme_id: schemeId, preview_id: p.preview_id, digest: p.digest }, { idempotencyKey: uuid() }).then((r) => r.data);
+export const listExports = (pid: string) =>
+  get<Page<ExportView>>(`${P(pid)}/exports`, { query: { limit: 50 } }).then((r) => r.data);
 export const getExport = (pid: string, id: string) =>
   get<ExportView>(`${P(pid)}/exports/${id}`).then((r) => r.data);
 

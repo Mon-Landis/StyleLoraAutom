@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { getConfig } from '../api/more';
 import { useApp } from '../state/app';
+import { ConnDot } from '../shell/ConnDot';
 import { Button, Field, Panel } from '../ui/primitives';
 import { ErrorView } from '../ui/ErrorView';
 import { Loading } from '../ui/slots';
@@ -23,6 +24,7 @@ export function SettingsPage() {
             <Button variant={density === 'comfortable' ? 'primary' : 'default'} onClick={() => setDensity('comfortable')}>舒适</Button>
           </div>
         </Field>
+        <Field label="连接状态"><ConnDot showLabel /></Field>
       </Panel>
       <Panel title="后端配置（只读）">
         {q.isLoading && <Loading />}

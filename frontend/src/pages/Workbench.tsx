@@ -52,7 +52,7 @@ export function Workbench() {
     }
   };
 
-  if (!pid) return <div className="page"><Empty title="尚未打开项目" hint="使用顶栏的「打开」或「新建」选择项目目录。" /></div>;
+  if (!pid) return <div className="page"><Empty title="尚未打开项目" hint="使用顶栏的「打开项目」选择或新建项目目录。" /></div>;
   const selIds = [...selected];
 
   return (
@@ -94,7 +94,7 @@ export function Workbench() {
         )}
       </section>
       <aside className="workbench__side">
-        <Panel title="预览" actions={<StageSwitch />}>
+        <Panel className="workbench__preview" title="预览" actions={<StageSwitch />}>
           {active
             ? <Preview item={active} onPrev={() => handlers.move(-1)} onNext={() => handlers.move(1)} />
             : <Empty title="选择一张图片" />}
