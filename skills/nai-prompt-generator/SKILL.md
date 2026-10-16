@@ -38,6 +38,7 @@ description: 产品内部调用、只返回 JSON，用于生成、补全、清�
 | `name` `count` `brief` | | generate 单组简写：顶层直接给这三项，等同 `groups` 只有一组。 |
 | `items` | array | complete / clean 单组简写：顶层直接给条目数组，组名按 `""` 处理。 |
 | `rating_policy` | string | `sfw`（默认）或 `nsfw_allowed`。 |
+| `content_safety` | string | 产品显式写入的内容声明，与 `rating_policy` 一致：非 nsfw 组为「SFW ONLY，明确不含 NSFW」，nsfw 组为「NSFW REQUESTED」。两者冲突时以更严格者为准（按 `sfw` 处理）。nsfw 组由产品路由到 `prompt_nsfw` 角色调用。 |
 | `aspect_hint` | string \| null | `landscape` / `portrait` / `square`；其它值按 `null`。 |
 | `tag_range` | [int, int] | 每条 `tag` 数量范围，默认 `[15, 40]`。 |
 | `language` | string | `nl` 的语言，默认 `en`。 |

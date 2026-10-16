@@ -14,6 +14,17 @@ from .tasks import TaskDTO, ResourceRef, ProjectRef, ProgressDTO, RecoveryDTO, S
 from .prompt_groups import service
 
 
+SFW_DECLARATION = ('SFW ONLY. This request explicitly excludes any NSFW content: '
+                   'no nudity, no sexual content, no suggestive poses or fetish elements.')
+NSFW_DECLARATION = ('NSFW REQUESTED. This group is marked nsfw; explicit adult content '
+                    'is part of the requirement and must be written plainly when the input calls for it.')
+
+
+def content_safety(nsfw: bool) -> str:
+    """Explicit content declaration sent with every prompt-generation call (U19)."""
+    return NSFW_DECLARATION if nsfw else SFW_DECLARATION
+
+
 def response_schema():
     entry = {'type':'object', 'properties': {
         'index': {'const':0}, 'tag': {'type':'array','items':{'type':'string'}},
@@ -191,6 +202,7 @@ class PromptCompletion:
                         {'task':'complete', 'groups':[{'name':record['group_name'], 'items':[item['content']]}],
                          'allow_rewrite':False, 'include_characters':False,
                          'rating_policy':'nsfw_allowed' if group.nsfw else 'sfw',
+                         'content_safety':content_safety(group.nsfw),
                          'aspect_hint':item['content'].get('aspect')}, schema,
                         transport_retry_limit=0, cancel=self.cancel[identity])
                     reply = await self.rt.llm.complete_json(call, repair_limit=0)
