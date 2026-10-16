@@ -47,9 +47,10 @@ async def protect(request, call_next):
                 raise Failure(403, 'security:origin_denied')
             return Response(status_code=204, headers={'Access-Control-Allow-Origin': origin,
                 'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
-                'Access-Control-Allow-Headers': 'Authorization,Content-Type,If-Match,Idempotency-Key,Last-Event-ID,X-Expected-Versions',
+                'Access-Control-Allow-Headers': 'Authorization,Content-Type,If-Match,If-None-Match,Idempotency-Key,Last-Event-ID,X-Expected-Versions',
                 'X-Request-ID': request_id, 'Vary': 'Origin'})
         path = request.url.path
+        f27 = path.startswith(('/api/prompt-groups', '/api/prompt-imports', '/api/safety/')) or path == '/api/settings' or path == '/api/tasks' and request.method == 'POST'
         if 'token' in request.query_params or 'access_token' in request.query_params:
             raise Failure(422, 'input:invalid')
         if path.startswith('/api') and path != '/api/session/bootstrap':
@@ -64,19 +65,21 @@ async def protect(request, call_next):
         raw = bytearray()
         async for chunk in request.stream():
             raw.extend(chunk)
-            if len(raw) > 16*1024*1024:
+            if len(raw) > (101 if path == '/api/prompt-imports/preview' else 16)*1024*1024:
                 raise Failure(413, 'request:too_large')
         request._body = bytes(raw)
         content_type = request.headers.get('content-type', '')
         if raw and write and 'json' not in content_type and 'multipart/form-data' not in content_type:
             raise Failure(415, 'request:media_type_unsupported')
-        if 'multipart/form-data' in content_type and len(raw) > 11*1024*1024:
+        if 'multipart/form-data' in content_type and len(raw) > 11*1024*1024 and path != '/api/prompt-imports/preview':
             raise Failure(413, 'request:too_large')
         if path.startswith(('/api/dictionaries', '/api/rules', '/api/tags/imports')) and len(raw) > 10*1024*1024:
             raise Failure(413, 'request:too_large')
         value = strict_json(raw) if raw and 'json' in content_type else None
         lock, cached, identity = None, None, None
-        if request.method == 'POST' and path != '/api/session/bootstrap':
+        if f27 and write and not request.headers.get('idempotency-key'):
+            raise Failure(428, 'revision:required')
+        if request.method == 'POST' and path != '/api/session/bootstrap' and not f27:
             try:
                 key = str(UUID(request.headers.get('idempotency-key', '')))
             except ValueError:

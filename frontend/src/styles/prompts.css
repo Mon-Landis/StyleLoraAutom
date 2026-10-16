@@ -1,0 +1,69 @@
+/* F27 提示词组库 + NSFW 图像组件样式：只引用令牌。 */
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+.pg { flex: 1; min-height: 0; display: grid; grid-template-columns: var(--size-pg-left) minmax(0, 1fr) var(--size-pg-right); gap: var(--space-2); padding: var(--space-2); }
+.pg-left, .pg-right, .pg-mid { min-height: 0; display: flex; flex-direction: column; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); }
+.pg-mid-wrap { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+.pg-mid { flex: 1; }
+.pg-muted { color: var(--color-text-muted); font-size: var(--font-size-xs); margin: 0; }
+
+.pg-left__top { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); border-bottom: 1px solid var(--color-border); }
+.pg-left__filters { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.pg-left__list { flex: 1; min-height: 0; overflow-y: auto; padding: var(--space-2); display: flex; flex-direction: column; gap: var(--space-2); }
+.pg-left__foot { padding: var(--space-3); border-top: 1px solid var(--color-border); display: flex; }
+.pg-left__foot .btn { flex: 1; justify-content: center; }
+.pg-group { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--color-border); border-left: 2px solid transparent; border-radius: var(--radius-md); cursor: pointer; }
+.pg-group:hover { background: var(--color-accent-subtle); }
+.pg-group.is-selected { border-left-color: var(--color-accent); background: var(--color-accent-subtle); }
+.pg-group__name { font-weight: var(--font-weight-medium); overflow-wrap: anywhere; }
+.pg-group__meta { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+
+.pg-mid__head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--color-border); flex-wrap: wrap; }
+.pg-mid__title { display: flex; align-items: baseline; gap: var(--space-3); min-width: 0; flex-wrap: wrap; }
+.pg-mid__name { margin: 0; font-size: var(--font-size-lg); }
+.pg-mid__tools { display: flex; align-items: center; gap: var(--space-3); }
+.pg-mid__body { flex: 1; min-height: 0; overflow-y: auto; padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-3); }
+.pg-mid__more { display: flex; justify-content: center; }
+
+.pg-entry { display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface); cursor: pointer; }
+.pg-entry:hover { background: var(--color-accent-subtle); }
+.pg-entry.is-selected { border-color: var(--color-accent); box-shadow: inset 0 0 0 1px var(--color-accent); }
+.pg-entry.is-disabled { opacity: var(--opacity-disabled); background: var(--color-surface-sunken); }
+.pg-entry__thumb { width: var(--size-pg-thumb); height: var(--size-pg-thumb); }
+.pg-entry__tags { font-family: var(--font-mono); font-size: var(--font-size-sm); overflow-wrap: anywhere; }
+.pg-entry__nl, .pg-entry__full { overflow-wrap: anywhere; display: flex; flex-direction: column; gap: var(--space-2); }
+.pg-entry__full { grid-column: 2 / -1; }
+.pg-entry__seg { margin: 0; }
+.pg-entry__seglabel { margin-right: var(--space-2); color: var(--color-text-muted); font-size: var(--font-size-2xs); }
+.pg-entry__marks { grid-column: 1 / -1; display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.pg-entry__marks:empty { display: none; }
+
+.pg-right { justify-content: space-between; padding: var(--space-3); gap: var(--space-3); }
+.pg-right__top, .pg-right__bottom { display: flex; flex-direction: column; gap: var(--space-2); }
+.pg-right .btn { justify-content: center; }
+
+.pg-form { display: flex; flex-direction: column; gap: var(--space-2); min-width: var(--size-dialog-width); max-height: 70vh; overflow-y: auto; }
+.pg-form__actions { display: flex; justify-content: flex-end; gap: var(--space-2); }
+.pg-form__h { margin: var(--space-2) 0 0; font-size: var(--font-size-md); }
+.pg-import-preview { display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-3); background: var(--color-surface-sunken); border-radius: var(--radius-md); }
+
+.ctxmenu { position: fixed; z-index: var(--z-popover); list-style: none; margin: 0; padding: var(--space-2) 0; min-width: var(--size-ctxmenu-width);
+  background: var(--color-surface-raised); border: 1px solid var(--color-border); border-radius: var(--radius-lg); box-shadow: var(--shadow-popover); }
+.ctxmenu .btn, .ctxmenu__item { display: flex; width: 100%; border: 0; border-radius: var(--radius-0); background: transparent; text-align: left; }
+.ctxmenu__item { align-items: center; min-height: var(--row-height); padding: 0 var(--space-4); cursor: pointer; }
+.ctxmenu__item:hover:not(:disabled), .ctxmenu__item:focus-visible { background: var(--color-accent-subtle); }
+.ctxmenu__item--danger { color: var(--color-danger); }
+
+/* NSFW 图像组件：模糊是表现规则，由 data-blur 驱动；策略版本变化时 img 被重新挂载。 */
+.pimg { position: relative; display: block; width: 100%; height: 100%; overflow: hidden; background: var(--color-surface-sunken); border-radius: var(--radius-sm); }
+.pimg img { display: block; width: 100%; height: 100%; object-fit: cover; transition: filter var(--motion-fast) var(--ease-standard); }
+.pimg--fill img { object-fit: contain; }
+.pimg[data-blur='true'] img { filter: blur(var(--blur-nsfw)); }
+.pimg__ph { display: grid; place-items: center; width: 100%; height: 100%; color: var(--color-text-muted); }
+.pimg__tag, .pimg__hint { position: absolute; padding: var(--space-1) var(--space-3); background: var(--color-surface); color: var(--color-text-primary); border: 1px solid var(--color-danger); font-size: var(--font-size-2xs); border-radius: var(--radius-sm); }
+.pimg__tag { left: var(--space-2); top: var(--space-2); }
+.pimg__hint { left: 50%; top: 50%; transform: translate(-50%, -50%); white-space: nowrap; }
+.pimg__reveal { position: absolute; left: 50%; bottom: var(--space-3); transform: translateX(-50%); }
+.thumb .pimg { border-radius: var(--radius-0); }
+.preview__canvas .pimg { width: auto; height: auto; max-width: 100%; max-height: 100%; background: transparent; }
+.preview__canvas .pimg--fill img { width: auto; height: auto; max-width: 100%; max-height: 100%; }

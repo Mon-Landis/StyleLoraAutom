@@ -40,6 +40,8 @@ def create_app(runtime, *, frontend_dist=None):
     app.include_router(exchange.router)
     app.include_router(product.router)
     app.include_router(prompts.router)
+    from .routes import prompt_groups
+    app.include_router(prompt_groups.router)
     app.include_router(storage.router)
     app.include_router(catalog_extra.router)
     app.include_router(local.router)

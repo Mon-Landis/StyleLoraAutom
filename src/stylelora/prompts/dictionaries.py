@@ -57,7 +57,13 @@ def _decode(data):
 def load_dictionary(dictionary_id, *, root=None):
     for kind in ('features','prompts'):
         path=_path(dictionary_id,kind,root)
-        if path.is_file(): return _decode(strict_loads(path.read_bytes()))
+        if path.is_file():
+            raw = strict_loads(path.read_bytes())
+            if kind == 'prompts' and raw.get('schema_version') == 3:
+                require(not raw.get('_deleted'), 'dictionary:not_found')
+                from .groups import decode_group, legacy_dictionary
+                return legacy_dictionary(decode_group(raw))
+            return _decode(raw)
     raise PromptError('dictionary:not_found')
 def save_dictionary(value, *, expected_revision, request_key, root=None):
     with LOCK:
@@ -66,6 +72,7 @@ def save_dictionary(value, *, expected_revision, request_key, root=None):
             validate_content(entry)
         path=_path(value.dictionary_id,'features' if isinstance(value,FeatureDictionary) else 'prompts',root)
         data=strict_loads(path.read_bytes()) if path.is_file() else None
+        require(not data or data.get('schema_version') != 3, 'dictionary:legacy_read_only')
         operations=data.get('_operations',{}) if data else {}
         signature=digest({'operation':'save','value':_encode(value),'expected_revision':expected_revision})
         if request_key in operations:
@@ -87,6 +94,7 @@ def append_entries(dictionary_id, entries, *, expected_revision, request_key, ro
         value=load_dictionary(dictionary_id,root=root)
         require(isinstance(value,PromptDictionary))
         path=_path(dictionary_id,'prompts',root); data=strict_loads(path.read_bytes()); operations=data.get('_operations',{})
+        require(data.get('schema_version') != 3, 'dictionary:legacy_read_only')
         legacy_signature=digest({'operation':'append','entries':entries,'expected_revision':expected_revision})
         signature=digest({'operation':'append','entries':entries,'expected_revision':expected_revision,'category':value.category})
         if request_key in operations:
@@ -118,13 +126,22 @@ def list_dictionaries(*, category=None, root=None, kind=None):
         require(category == 'full_content','dictionary:category_unsupported')
         require(kind != 'features','dictionary:category_unsupported')
         kind = 'prompts'
-    return tuple(load_dictionary(p.stem,root=root) for k in ((kind,) if kind else ('features','prompts'))
-                 for p in sorted((_root(root)/k).glob('*.json')))
+    values = []
+    for k in ((kind,) if kind else ('features','prompts')):
+        for path in sorted((_root(root)/k).glob('*.json')):
+            try:
+                values.append(load_dictionary(path.stem, root=root))
+            except PromptError as exc:
+                if exc.code != 'dictionary:not_found':
+                    raise
+    return tuple(values)
 
 
 def delete_dictionary(dictionary_id, *, expected_revision, root=None):
     with LOCK:
         value=load_dictionary(dictionary_id,root=root)
+        raw = strict_loads(_path(dictionary_id,'features' if isinstance(value,FeatureDictionary) else 'prompts',root).read_bytes())
+        require(raw.get('schema_version') != 3, 'dictionary:legacy_read_only')
         require(value.revision==expected_revision,'dictionary:revision_conflict')
         try: _path(dictionary_id,'features' if isinstance(value,FeatureDictionary) else 'prompts',root).unlink()
         except OSError: raise PromptError('storage:io_error') from None

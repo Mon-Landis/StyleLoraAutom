@@ -21,6 +21,7 @@ def preview_import(data, *, format, kind, dimension=None, base_revision=1, catal
     require(format in ('json','csv','txt') and kind in ('features','prompts'))
     catalog=catalog or LocalCatalog(); entries=[]; features=[]; issues=[]; raw=[]
     def prompt(row,number):
+        require(isinstance(row, dict) and bool(row.get('tags')))
         entry=construct(PromptEntry,row); validate_content(entry,catalog=catalog); entries.append(entry)
     def feature(row,number):
         candidate=construct(FeatureCandidate,row)

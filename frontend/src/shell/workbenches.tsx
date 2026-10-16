@@ -48,7 +48,7 @@ function PromptsStats() {
 export const WORKBENCHES: WorkbenchDef[] = [
   { id: 'dataset', path: '/workbench', label: '数据集工作台', icon: 'nav-workbench', Stats: DatasetStats },
   { id: 'sources', path: '/sources', label: '数据源', icon: 'nav-sources', Stats: SourcesStats },
-  { id: 'prompts', path: '/prompts', label: '提示词生产', icon: 'nav-prompts', Stats: PromptsStats },
+  { id: 'prompts', path: '/prompts', label: '提示词组库', icon: 'nav-prompts', Stats: PromptsStats },
 ];
 
 export function workbenchFor(pathname: string): WorkbenchDef | undefined {

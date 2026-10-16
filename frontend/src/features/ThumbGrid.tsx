@@ -1,6 +1,7 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ImageItem } from '../api/types';
-import { useBlobUrl } from '../lib/useBlobUrl';
+import { isSensitiveRating } from '../lib/nsfw';
+import { PreviewImage } from '../ui/PreviewImage';
 import { computeWindow, scrollTopFor } from '../lib/virtual';
 import { readTokenPx } from '../tokens';
 import { Icon } from '../ui/slots';
@@ -9,7 +10,6 @@ const Thumb = memo(function Thumb(p: {
   item: ImageItem; active: boolean; selected: boolean;
   onClick: (e: React.MouseEvent) => void;
 }) {
-  const { url } = useBlobUrl(p.item.thumbnail_url ?? p.item.original_url);
   return (
     <div
       className={`thumb thumb--${p.item.review_status}${p.active ? ' is-active' : ''}${p.selected ? ' is-selected' : ''}`}
@@ -18,7 +18,8 @@ const Thumb = memo(function Thumb(p: {
       aria-selected={p.selected}
       aria-label={`${p.item.filename ?? p.item.image_id} ${p.item.review_status}`}
     >
-      {url ? <img src={url} alt="" draggable={false} /> : <span className="thumb__ph" aria-hidden="true" />}
+      {/* 网格自行管理焦点；rating 为 questionable/explicit 时与提示词组预览共用同一 NSFW 状态机 */}
+      <PreviewImage path={p.item.thumbnail_url ?? p.item.original_url} sensitive={isSensitiveRating(p.item.rating)} alt="" focusable={false} fill forceFocused={p.active} />
       <span className="thumb__status"><Icon name={p.item.review_status === 'keep' ? 'keep' : p.item.review_status === 'reject' ? 'reject' : 'unreviewed'} /></span>
       {p.item.file_missing && <span className="thumb__warn"><Icon name="warn" /></span>}
     </div>

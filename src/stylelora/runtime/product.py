@@ -14,14 +14,15 @@ class ProductStore:
         self.llm = ConfigStore(self.root / 'llm.json')
         self.defaults = dict(revision=0, cost_policy='ask', storage_thresholds={'project_bytes': 5_000_000_000},
                              llm_limits={'concurrency': 2, 'timeout_s': 120}, wd_enabled=False,
-                             mcp={'discovery_mode': 'default'}, capabilities={})
+                             mcp={'discovery_mode': 'default'}, capabilities={},
+                             nsfw_enabled=False, nsfw_display_mode='click_reveal')
 
     async def call(self, work):
         return await asyncio.wrap_future(self.queue.submit(work))
 
     def get(self):
-        data = read_json(self.root / 'config.json', deepcopy(self.defaults))
-        return data | {'version': str(data['revision'])}
+        data = deepcopy(self.defaults) | read_json(self.root / 'config.json', {})
+        return {k:v for k,v in data.items() if k != '_safety_operations'} | {'version': str(data['revision'])}
 
     def update(self, patch, expected):
         fields(patch, {'cost_policy', 'storage_thresholds', 'llm_limits', 'wd_enabled', 'mcp'})
@@ -44,11 +45,37 @@ class ProductStore:
         if any(data[key] != value for key, value in patch.items()):
             data.update(patch)
             data['revision'] += 1
-            atomic_json(self.root / 'config.json', data)
+            operations = read_json(self.root/'config.json', {}).get('_safety_operations')
+            atomic_json(self.root / 'config.json', data | ({'_safety_operations': operations} if operations else {}))
         return data | {'version': str(data['revision'])}
 
     def close(self):
         self.queue.shutdown(wait=True)
+
+    def update_safety(self, patch, expected, request_key):
+        from stylelora.prompts.dictionaries import LOCK, digest
+        with LOCK:
+            fields(patch, {'nsfw_enabled', 'nsfw_display_mode', 'image_display'})
+            if 'image_display' in patch:
+                if 'nsfw_display_mode' in patch and patch['image_display'] != patch['nsfw_display_mode']:
+                    raise Failure(422, 'schema:invalid')
+                patch = dict(patch); patch['nsfw_display_mode'] = patch.pop('image_display')
+            if 'nsfw_enabled' in patch and type(patch['nsfw_enabled']) is not bool or 'nsfw_display_mode' in patch and patch['nsfw_display_mode'] not in ('click_reveal', 'hover', 'show'):
+                raise Failure(422, 'schema:invalid')
+            data = self.get(); data.pop('version')
+            operations = read_json(self.root/'config.json', {}).get('_safety_operations', {})
+            signature = digest([patch, expected])
+            if request_key in operations:
+                if operations[request_key]['digest'] != signature:
+                    raise Failure(409, 'dictionary:request_key_conflict')
+                return operations[request_key]['result']
+            if data['revision'] != expected:
+                raise Failure(412, 'settings:revision_conflict')
+            data.update(patch); data['revision'] += 1
+            result = data | {'version': str(data['revision'])}
+            operations[request_key] = {'digest': signature, 'result': result}
+            atomic_json(self.root/'config.json', data | {'_safety_operations': operations})
+            return result
 
     def get_resources(self):
         from stylelora.resources.network import NetworkPolicy

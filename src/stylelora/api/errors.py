@@ -16,7 +16,13 @@ def translate(exc):
     if isinstance(exc, PreviewExpired):
         return Failure(410, 'preview:expired')
     if isinstance(exc, PromptError):
-        return Failure(404 if 'not_found' in exc.code else 409 if 'conflict' in exc.code else 422, exc.code)
+        from stylelora.prompts.types import plain
+        status = {'dictionary:revision_conflict': 412, 'project:closed': 409,
+                  'completion:stale': 409, 'completion:unavailable': 503,
+                  'storage:io_error': 500, 'storage:corrupt_snapshot': 500,
+                  'preview:expired': 410, 'image:too_large': 413, 'import:limit': 413,
+                  'import:unsupported': 422}.get(exc.code, 404 if 'not_found' in exc.code else 409 if 'conflict' in exc.code else 422)
+        return Failure(status, exc.code, details={'issues': plain(exc.issues)})
     if isinstance(exc, BackendError):
         return Failure(503, 'dependency:unavailable')
     for cls, status, code in (

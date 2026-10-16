@@ -50,7 +50,8 @@ def normalize_tag(tag, catalog=None):
 
 
 def tag_key(entry, catalog=None):
-    return tuple(sorted({normalize_tag(t, catalog) for t in entry.tags}))
+    tags = tuple(sorted({normalize_tag(t, catalog) for t in entry.tags}))
+    return tags or ('\x00nl:'+' '.join((entry.natural_language or '').split()),)
 
 
 def entry_key(entry, catalog=None):
@@ -117,7 +118,7 @@ def validate_dto(v):
             text(dim)
             strings(tags, nonempty=True)
     if isinstance(v, (PromptEntry, ComposerResult)):
-        strings(v.tags, nonempty=isinstance(v, PromptEntry))
+        strings(v.tags, nonempty=isinstance(v, PromptEntry) and not (isinstance(v.natural_language, str) and bool(v.natural_language.strip())))
         require(v.natural_language is None or isinstance(v.natural_language, str))
         if isinstance(v, PromptEntry):
             object.__setattr__(v, 'tags', tuple(normalize_tag(t) for t in v.tags))

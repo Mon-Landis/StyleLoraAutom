@@ -76,6 +76,12 @@
   --hold-danger-ms: 1200ms;
   --hold-secondary-ms: 800ms;
   --toast-ttl: 8000ms;
+  --size-pg-left: 264px;
+  --size-pg-right: 200px;
+  --size-pg-thumb: 88px;
+  --size-ctxmenu-width: 200px;
+  --blur-nsfw: 14px;
+  --opacity-disabled: 0.5;
 }
 
 :root,

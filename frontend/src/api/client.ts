@@ -20,6 +20,8 @@ export interface ReqOpts {
   query?: Record<string, QueryValue>;
   body?: unknown;
   ifMatch?: string | null;
+  /** 创建新资源：If-None-Match: *（F27 §8）。 */
+  ifNoneMatch?: boolean;
   idempotencyKey?: string;
   signal?: AbortSignal;
   anonymous?: boolean;
@@ -53,9 +55,13 @@ export const stripEtag = (v: string | null): string | null => (v ? v.replace(/^W
 function headersFor(method: string, o: ReqOpts): Record<string, string> {
   const h: Record<string, string> = {};
   if (!o.anonymous && token) h.Authorization = `Bearer ${token}`;
-  if (o.body !== undefined) h['Content-Type'] = 'application/json';
+  // FormData 由浏览器自行带 multipart boundary。
+  if (o.body !== undefined && !(o.body instanceof FormData)) h['Content-Type'] = 'application/json';
   if (o.ifMatch) h['If-Match'] = `"${o.ifMatch}"`;
-  if (method === 'POST' && !o.anonymous) h['Idempotency-Key'] = o.idempotencyKey ?? uuid();
+  if (o.ifNoneMatch) h['If-None-Match'] = '*';
+  // POST 默认生成幂等键；PATCH/PUT/DELETE 显式传入 idempotencyKey 才携带（F27 §8 要求所有写入带键）。
+  const writes = method === 'POST' || (method !== 'GET' && !!o.idempotencyKey);
+  if (writes && !o.anonymous) h['Idempotency-Key'] = o.idempotencyKey ?? uuid();
   return h;
 }
 
@@ -67,7 +73,7 @@ async function send(method: string, path: string, o: ReqOpts): Promise<Response>
     res = await fetch(buildUrl(path, o.query), {
       method,
       headers: headersFor(method, o),
-      body: o.body === undefined ? undefined : JSON.stringify(o.body),
+      body: o.body === undefined ? undefined : o.body instanceof FormData ? o.body : JSON.stringify(o.body),
       signal: o.signal,
     });
   } catch (e) {

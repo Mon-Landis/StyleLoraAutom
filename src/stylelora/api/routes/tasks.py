@@ -7,6 +7,20 @@ from stylelora.runtime.tasks import TaskQuery
 router = APIRouter(prefix='/api/tasks')
 
 
+@router.post('')
+async def create_task(request: Request):
+    from stylelora.runtime.prompt_completion import completion_service
+    from stylelora.prompts.groups import GroupRef
+    from stylelora.prompts.validation import require
+    rt = runtime(request)
+    value = fields(await request.json(), {'type', 'ref', 'entry_ids', 'base_revision'}, {'type', 'ref', 'base_revision'})
+    require(value['type'] == 'prompt_completion')
+    key = request.headers.get('idempotency-key')
+    require(isinstance(key, str) and bool(key))
+    result = await completion_service(rt).enqueue(GroupRef.parse(value['ref']), value.get('entry_ids'), value['base_revision'], key)
+    return JSONResponse(result, status_code=202)
+
+
 @router.get('')
 async def list_tasks(request: Request):
     rt = runtime(request)
@@ -23,7 +37,12 @@ async def list_tasks(request: Request):
 async def detail(task_id: str, request: Request):
     rt = runtime(request)
     await rt.refresh_tasks()
-    return plain(await rt.tasks.get(task_id))
+    result = plain(await rt.tasks.get(task_id))
+    adapter, linked, _ = rt.tasks._record(task_id)
+    if linked.kind == 'prompt_completion':
+        result['type'] = 'prompt_completion'
+        result['reports'] = adapter.records[linked.id]['reports']
+    return result
 
 
 @router.post('/{task_id}/cancel')

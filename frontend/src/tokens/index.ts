@@ -1,5 +1,6 @@
 export * from './base';
 export * from './motion';
+export * from './hold';
 
 function rootStyle(): CSSStyleDeclaration | null {
   return typeof document === 'undefined' ? null : getComputedStyle(document.documentElement);

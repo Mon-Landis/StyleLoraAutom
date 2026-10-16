@@ -65,6 +65,16 @@ export function HoldToConfirm({ kind = 'danger', onConfirm, children, disabled, 
     >
       <span className="hold__fill" aria-hidden="true" />
       <span className="hold__label">{children}</span>
+      {p > 0 && (
+        <span
+          className="visually-hidden"
+          role="progressbar"
+          aria-label="长按进度"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(p * 100)}
+        />
+      )}
     </button>
   );
 }

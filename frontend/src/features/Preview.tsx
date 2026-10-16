@@ -4,6 +4,8 @@ import { useApp, type Stage } from '../state/app';
 import type { ImageItem } from '../api/types';
 import { Button } from '../ui/primitives';
 import { Icon, Loading } from '../ui/slots';
+import { PreviewImage } from '../ui/PreviewImage';
+import { isSensitiveRating } from '../lib/nsfw';
 
 const STAGES: Array<[Stage, string]> = [['checker', '棋盘'], ['white', '白'], ['gray', '灰'], ['black', '黑'], ['dark', '深色']];
 
@@ -29,7 +31,7 @@ export function Preview({ item, onPrev, onNext }: { item: ImageItem; onPrev: () 
       <div className={`preview__canvas${fit ? ' is-fit' : ''}`} onDoubleClick={() => setFit((f) => !f)}>
         {!url && !error && <Loading />}
         {error && <span className="preview__err"><Icon name="warn" /> 无法加载原图</span>}
-        {url && <img src={url} alt={item.filename ?? String(item.image_id)} draggable={false} />}
+        {url && <PreviewImage path={item.original_url} sensitive={isSensitiveRating(item.rating)} alt={item.filename ?? String(item.image_id)} fill />}
       </div>
       <div className="preview__nav">
         <Button variant="ghost" aria-label="上一张" onClick={onPrev}><Icon name="prev" /></Button>

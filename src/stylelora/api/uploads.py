@@ -4,12 +4,12 @@ from email.policy import default
 from stylelora.runtime.contracts import Failure, fields
 
 
-async def upload(request, allowed, required):
+async def upload(request, allowed, required, *, limit=10*1024*1024, binary=('file',)):
     content_type = request.headers.get('content-type', '')
     if not content_type.startswith('multipart/form-data;'):
         raise Failure(415, 'request:media_type_unsupported')
     raw = await request.body()
-    if len(raw) > 10*1024*1024:
+    if len(raw) > limit:
         raise Failure(413, 'request:too_large')
     message = BytesParser(policy=default).parsebytes(
         b'Content-Type: ' + content_type.encode('ascii') + b'\r\nMIME-Version: 1.0\r\n\r\n' + raw)
@@ -24,7 +24,7 @@ async def upload(request, allowed, required):
         if not isinstance(value, bytes):
             raise Failure(422, 'schema:invalid')
         try:
-            result[key] = value if key == 'file' else value.decode('utf-8')
+            result[key] = value if key in binary else value.decode('utf-8')
         except UnicodeError:
             raise Failure(422, 'schema:invalid') from None
     return fields(result, allowed, required)

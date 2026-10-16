@@ -105,6 +105,8 @@ class Runtime:
         return self.stop_history.get(key, {}).get('reason')
 
     async def start_task_monitor(self):
+        from .prompt_completion import completion_service
+        completion_service(self)
         if not hasattr(self, 'prompts'):
             from stylelora.prompts.task_store import TaskStore
             if any(TaskStore(self.product.root.parent).root.glob('*.json')):
@@ -112,9 +114,13 @@ class Runtime:
                 self.prompts = Prompts(self)
         if self.task_monitor is None:
             async def monitor():
+                next_prompt_gc = self.clock()
                 while not self.draining:
                     try:
                         await self.refresh_tasks()
+                        if self.clock() >= next_prompt_gc:
+                            await self.product.call(self.prompt_groups.store.collect_all)
+                            next_prompt_gc = self.clock()+60
                     except Exception:
                         # A failing read must remain unavailable, never invent a failed task.
                         pass
