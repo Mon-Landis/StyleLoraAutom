@@ -18,6 +18,9 @@ data/
 dataset/
 exports/
 
+# 临时投递目录（agent 无法直接接收的文件，用完即删）
+devcache/
+
 # 本地密钥与环境
 .env
 .env.*
