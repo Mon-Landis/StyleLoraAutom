@@ -12,13 +12,14 @@
 `ConvertedToken(value: str, raw_weight: Decimal, weight: Decimal, span: SourceSpan, rendered: str)`。
 `value` 是解码转义、完成 artist/下划线规范化但尚未输出转义的正文；tokens 仅含最终保留项。
 `SourceSpan(start: int, end: int)` 使用原串 Unicode 码点索引、左闭右开，不是 UTF-8 字节。
-token span 覆盖正文源区间；warning span 指向触发符号；全局压缩告警覆盖整个输入。
+token span 覆盖正文源区间；warning span 指向触发符号。
 `ConversionWarning(code: WarningCode, span: SourceSpan, detail: str)`；detail 仅辅助显示，不参与逻辑。
-`ConversionPolicy(bracket_mode: Literal['multiplicative','additive'], ordinary_underscores: Literal['preserve','space'], min_weight: Decimal, max_weight: Decimal, decimal_places: int, max_depth: int, max_chars: int, max_numeric_chars: int)`。
-推荐测试实例 P：`('multiplicative', 'preserve', Decimal('0.1'), Decimal('3.2'), 2, 128, 1000000, 64)`。
-调用方必须显式传 policy；不要用隐藏默认值提前决定 Q01 或其它 Q 项。
-校验要求：`0 < min_weight < 1 < max_weight <= 3.2`；decimal_places 固定为 2。
-min_weight、max_weight 必须是有限且可精确表示为两位小数的 Decimal；各资源上限为正整数。
+`ConversionPolicy(bracket_mode: Literal['multiplicative'], ordinary_underscores: Literal['preserve','space'], max_weight: Decimal, decimal_places: int, max_depth: int, max_chars: int, max_numeric_chars: int)`。
+bracket_mode 仅支持 `'multiplicative'`（Q01 已裁决）；加法口径不支持，传入 `'additive'` 或其它值抛 `ValueError`。无 min_weight 字段（Q04 已裁决）。
+推荐测试实例 P：`('multiplicative', 'preserve', Decimal('3.2'), 2, 128, 1000000, 64)`。
+调用方必须显式传 policy；不要用隐藏默认值提前决定其它未裁决 Q 项。
+校验要求：`1 < max_weight <= 3.2`；decimal_places 固定为 2。
+max_weight 必须是有限且可精确表示为两位小数的 Decimal；各资源上限为正整数。
 非法类型抛 `TypeError`；非法 policy 抛 `ValueError`；文本语法错误走 warnings，不抛异常。
 入口幂等性：同输入、同策略得到完全相同结果；不保证 `convert(convert(x).text)` 相等。
 原因：输出是 Anima 方言，重复作为 nai 导入会再次转义普通括号；导入层须记录来源和转换版本。
@@ -54,7 +55,7 @@ min_weight、max_weight 必须是有限且可精确表示为两位小数的 Deci
 scan_nai 自身维护数值段开闭布尔状态以选择词法类型；parse_nai 重放这些类型并管理系数及括号栈。
 解析接口：`parse_nai(items: tuple[LexToken, ...], *, policy: ConversionPolicy) -> ParseResult`。
 `ParseResult(items: tuple[WeightedTag, ...], warnings: tuple[ConversionWarning, ...])`。
-`WeightedTag(value: str, raw_weight: Decimal, span: SourceSpan)`；保留非正权重，交压缩模块处理。
+`WeightedTag(value: str, raw_weight: Decimal, span: SourceSpan)`；保留非正权重，交权重截断模块丢弃。
 状态由正文缓冲、括号栈、单一活动数值段、当前 up/down 计数组成。
 括号或数值权重发生变化前，先将非空正文缓冲按旧状态发出；因此 `a{b}c` 产生三个 tag。
 SEP 只结束正文，不关闭括号和数值段；故 `2::a,b::` 对两个 tag 都应用 2。
@@ -64,22 +65,21 @@ SEP 只结束正文，不关闭括号和数值段；故 `2::a,b::` 对两个 tag
 
 ## 3 权重计算与合成
 
-乘法口径（NAI 实际语义）：`B = 1.05 ** (up - down)`；降权是除以 1.05，不是乘 0.95。
-用户“每层 ±5%”的加法口径：`B = 1 + 0.05 * (up - down)`；不在单层途中截断。
-三层花括号分别得到 1.157625 和 1.15；三层方括号分别约 0.8638376 和 0.85。
-混合 `{[x]}` 两种口径都得到 1；三增一减分别为 1.1025 和 1.10。
+乘法口径（官方语义，Q01 已裁决）：`B = 1.05 ** (up - down)`；`{}` 每层 ×1.05，`[]` 每层 ÷1.05，不是乘 0.95。
+加法口径（`B = 1 + 0.05 * (up - down)`）不支持，policy 中不提供该选项。
+三层花括号得到 1.157625；三层方括号约 0.8638376。
+混合 `{[x]}` 得到 1；三增一减得到 1.1025。
 活动数值段的系数记为 N，无数值段则 N=1；合成始终为 `raw_weight = B * N`。
 例如 `{2::x::}` 的原始权重为 2.1；`2::{x}::` 也为 2.1。
 每个正文片段按当时栈状态计算；`{a,[b],c}` 分别为 1.05、1、1.05。
-加法口径在 down-up >=20 时可能得到非正值，和数值非正权重走同一丢弃规则。
+乘法口径 B 恒为正；非正权重只可能来自数值段（如 `0::`、`-1::`），按第 5 节硬边界规则丢弃。
 采用 Decimal 局部上下文 precision=128、ROUND_HALF_UP；不依赖进程全局 Decimal 设置。
-合成中不做两位小数舍入；只在压缩完成后量化，避免嵌套累计误差。
+合成中不做两位小数舍入；只在截断完成后量化，避免嵌套累计误差。
 数值候选长度含符号和点，超过 max_numeric_chars 不进入 Decimal，按非法数值恢复。
-建议 Q01 选择乘法，兼容实际 NAI；加法作为显式导入策略，不能依据内容猜测。
 
 ## 4 输出规范化
 
-目标权重语法确定为 `(tag:x)`，用户原写 `(x:tag)` 不采用；仍列 Q02 请求确认。
+目标权重语法为 `(tag:x)`（Q02 已裁决），用户原写 `(x:tag)` 不采用。
 正文的 `(`、`)` 一律分别输出为 `\(`、`\)`；权重包装括号由序列化器最后生成。
 转义先解码一次，再序列化一次；已转义 `\(` 不应变为双重转义。
 字面反斜线输出为 `\\`；字面 `{ } [ ]` 同样加反斜线，防止目标解析器将方括号当作降权。
@@ -93,38 +93,32 @@ artist 正文所有 `_` 替换为空格，再折叠空白；`artist:xxx_(yyy)` �
 例如 1.157625 → `(x:1.16)`，2 → `(x:2)`，1.004 → `x`；不输出科学计数法。
 字面 `|`、`::` 不承诺目标语义等价，保留并告警；不能将其解释为已支持的多角色协议。
 
-## 5 权重压缩算法
+## 5 权重截断算法
 
-推荐按一次入口调用的全部 tag 统一压缩；换行和数值段不重置压缩范围。
-非正值丢弃并 W_NONPOSITIVE_WEIGHT；避免把负向意图反转成微弱正向意图。
-低于 1 的值保留，低于下限 L=0.1 时抬到 L，并逐项 W_WEIGHT_FLOORED。
-高于 1 的值按到 1 的距离统一缩放，保持增权顺序和增量比例；不逐 tag 截断。
-上限 U=3.2；若最大值 M<=U 不改变增权值；否则全局只发一次 W_RANGE_COMPRESSED。
-例：权重 1、2、5 经压缩成为 1、1.55、3.2；逐项截断会使多个大权重失去强弱差异。
-代价：加入一个极大权重会改变其它增权 tag，必须在导入预览显示全局告警；详见 Q04。
+硬边界截断（Q04 已裁决 2026-10-16）：逐 tag 独立处理，不做比例/统一增量压缩，tag 之间互不影响。
+权重 <=0 的 tag 直接丢弃，不产生 warning；不反转为正向。
+权重 >U（U=max_weight=3.2）截断为 U；其余原样保留（0.8 仍为 0.8，5 → 3.2）。
+无下限：正的小权重原样保留，只按两位小数量化；不再有 0.1 抬升规则。
+截断不产生 warning；W_NONPOSITIVE_WEIGHT、W_WEIGHT_FLOORED、W_RANGE_COMPRESSED 不再产生（见第 6 节）。
 伪代码（在正文规范化、空 artist 删除之后执行）：
 ```text
-kept = []
-for tag in tags:
-    if tag.raw_weight <= 0: warn(W_NONPOSITIVE_WEIGHT, tag.span)
-    else: kept.append(tag)
-M = max([1] + [t.raw_weight for t in kept])
-s = 1 if M <= U else (U - 1) / (M - 1)
-if M > U: warn(W_RANGE_COMPRESSED, whole_input_span)
-for t in kept:
+emitted = []
+for t in tags:
     w = t.raw_weight
-    if w < L: w = L; warn(W_WEIGHT_FLOORED, t.span)
-    elif w > 1: w = 1 + (w - 1) * s
-    emit ScaledTag(t.value, t.raw_weight, clamp(quantize(w, '0.01', HALF_UP), L, U), t.span)
-return emitted_items
+    if w <= 0: continue          # 丢弃，无 warning
+    if w > U: w = U              # 硬截断，无 warning
+    emitted.append(ScaledTag(t.value, t.raw_weight, quantize(w, '0.01', HALF_UP), t.span))
+return emitted
 ```
-算法对已经压缩的权重再次运行数值上幂等；不意味着整条 nai→anima 文本转换幂等。
-舍入可能合并接近的权重，保证非严格单调；不保证舍入后增量比例仍精确相同。
-资源复杂度：扫描/解析 O(n)，压缩 O(t)，栈 O(max_depth)，token/结果 O(n)。
+量化后正权重若舍入为 0（raw_weight < 0.005）：按「权重 ≤0 直接丢弃、不告警」同一规则处理（主线裁定，2026-10-16）。
+算法对已截断的权重再次运行数值上幂等；不意味着整条 nai→anima 文本转换幂等。
+舍入可能合并接近的权重，保证非严格单调。
+资源复杂度：扫描/解析 O(n)，截断 O(t)，栈 O(max_depth)，token/结果 O(n)。
 
 ## 6 错误恢复与受限告警
 
 WarningCode 是以下封闭枚举；新增码必须更新协议和测试，不能用任意字符串代替。
+W_NONPOSITIVE_WEIGHT、W_WEIGHT_FLOORED、W_RANGE_COMPRESSED 已删除（Q04 已裁决）：非正权重静默丢弃，超上限静默截断。
 | code | 触发与恢复 |
 | --- | --- |
 | W_UNCLOSED_BRACKET | EOF 剩余开括号逐个自动关闭，已应用权重保留 |
@@ -134,8 +128,7 @@ WarningCode 是以下封闭枚举；新增码必须更新协议和测试，不�
 | W_UNKNOWN_DCOLON | 非数值段内裸 `::` 作为正文保留，不猜测角色边界 |
 | W_UNSUPPORTED_ALTERNATION | 未转义 `|` 保留，不选择或展开任一分支 |
 | W_EMPTY_BLOCK | 空括号块或空数值段删除；每个空块各一次 |
-| W_NONPOSITIVE_WEIGHT | 每个规范化后非空 tag 的原始权重 <=0，丢弃 |
-| W_WEIGHT_FLOORED / W_RANGE_COMPRESSED | 按第 5 节处理 |
+
 | W_EMPTY_ARTIST | 删除正文为空的 artist tag |
 | W_DANGLING_ESCAPE | 串尾孤立反斜线按字面反斜线保留 |
 | W_DEPTH_LIMIT | 第 max_depth+1 个开括号：终止转换，text 为空、tokens 为空 |
@@ -168,13 +161,13 @@ EOF 恢复告警定位对应开符号；空块告警也定位开符号，因此�
 | 词法 | scan_nai，见第 2 节 | policy、公共数据类型 | 词法告警；同输入确定性 | 转义、非法数值、CRLF、输入上限 |
 | NAI 解析 | parse_nai，见第 2 节 | LexToken、Decimal | 恢复及深度告警；同输入确定性 | 跨 tag 数值段、混合栈、错配 |
 | 正文规范化 | `normalize_nai_tags(tags: tuple[WeightedTag,...], *, policy: ConversionPolicy) -> ParseResult` | 公共类型 | 空 artist 告警；规范化值再次处理不变 | artist、两种下划线策略、空 artist |
-| 权重压缩 | `compress_weights(tags: tuple[WeightedTag,...], *, policy: ConversionPolicy) -> CompressionResult` | Decimal | 非正/下限/全局告警；数值幂等 | 0、负值、最大值、统一缩放 |
+| 权重截断 | `compress_weights(tags: tuple[WeightedTag,...], *, policy: ConversionPolicy) -> CompressionResult` | Decimal | 不产生告警；数值幂等 | 0、负值、>3.2 截断、小正权重原样 |
 | 序列化 | `render_anima(tags: tuple[ScaledTag,...]) -> tuple[ConvertedToken,...]` | 转义规则 | 合法类型无语法错误；同输入确定性 | 普通括号、反斜线、权重 1 |
 | 编排入口 | convert_nai_to_anima，见第 1 节 | 上述五模块 | 参数异常/告警汇总；不保证文本往返幂等 | 空串、排序、资源失败、结果一致性 |
 `ScaledTag(value: str, raw_weight: Decimal, weight: Decimal, span: SourceSpan)`。
 `CompressionResult(items: tuple[ScaledTag,...], warnings: tuple[ConversionWarning,...])`。
 正文规范化须接收解码后的正文；不要将 render_anima 的结果再次送入规范化模块。
-编排顺序：验证参数 → 扫描 → 解析 → 正文规范化 → 压缩 → 序列化 → 拼接与告警排序。
+编排顺序：验证参数 → 扫描 → 解析 → 正文规范化 → 权重截断 → 序列化 → 拼接与告警排序。
 各阶段只返回不可变数据；无日志、文件、网络、目录查询或全局状态副作用。
 
 ## 8 测试向量
@@ -189,9 +182,9 @@ EOF 恢复告警定位对应开符号；空块告警也定位开符号，因此�
 | T03 | `{cat}` | `(cat:1.05)` | 无 |
 | T04 | `[cat]` | `(cat:0.95)` | 无 |
 | T05 | `{{{cat}}}` | `(cat:1.16)` | 无 |
-| T06 | `{{{cat}}}` | `(cat:1.15)` | 无；bracket_mode=additive |
+| T06 | `{{{cat}}}` | 抛 `ValueError` | 无结果；bracket_mode=additive（不支持，Q01） |
 | T07 | `[[[cat]]]` | `(cat:0.86)` | 无 |
-| T08 | `[[[cat]]]` | `(cat:0.85)` | 无；bracket_mode=additive |
+| T08 | （已废弃） | （已废弃） | 原加法口径向量，Q01 裁决后删除，编号保留不复用 |
 | T09 | `{[cat]}` | `cat` | 无 |
 | T10 | `{a,[b],c}` | `(a:1.05), b, (c:1.05)` | 无 |
 | T11 | `1.5::cat::` | `(cat:1.5)` | 无 |
@@ -205,11 +198,11 @@ EOF 恢复告警定位对应开符号；空块告警也定位开符号，因此�
 | T19 | `{artist:xxx_(yyy)}` | `(@xxx \(yyy\):1.05)` | 无 |
 | T20 | `blue_hair` | `blue_hair` | 无 |
 | T21 | `blue_hair` | `blue hair` | 无；ordinary_underscores=space |
-| T22 | `-1::cat::,dog` | `dog` | W_NONPOSITIVE_WEIGHT |
-| T23 | `0::cat::` | ∅ | W_NONPOSITIVE_WEIGHT |
-| T24 | `0.01::cat::` | `(cat:0.1)` | W_WEIGHT_FLOORED |
+| T22 | `-1::cat::,dog` | `dog` | 无（非正权重静默丢弃） |
+| T23 | `0::cat::` | ∅ | 无（非正权重静默丢弃） |
+| T24 | `0.01::cat::` | `(cat:0.01)` | 无（正的小权重原样保留，无下限） |
 | T25 | `0.5::cat::` | `(cat:0.5)` | 无 |
-| T26 | `a,2::b::,5::c::` | `a, (b:1.55), (c:3.2)` | W_RANGE_COMPRESSED |
+| T26 | `a,2::b::,5::c::` | `a, (b:2), (c:3.2)` | 无（5 硬截断为 3.2，b 不受影响） |
 | T27 | `3.2::a::` | `(a:3.2)` | 无 |
 | T28 | `1.004::a::` | `a` | 无 |
 | T29 | `1.005::a::` | `(a:1.01)` | 无 |
@@ -233,7 +226,7 @@ EOF 恢复告警定位对应开符号；空块告警也定位开符号，因此�
 | T47 | `{{{cat` | `(cat:1.16)` | W_UNCLOSED_BRACKET×3 |
 | T48 | `a` + 一个反斜线 | `a` + 两个反斜线 | W_DANGLING_ESCAPE |
 | T49 | `2::a 3::b` | `(a 3:2), b` | 无；活动段的双冒号总是关闭符 |
-| T50 | `[` 重复20次 + `x` + `]` 重复20次 | ∅ | W_NONPOSITIVE_WEIGHT；additive |
+| T50 | `[` 重复20次 + `x` + `]` 重复20次 | `(x:0.38)` | 无；1.05^-20≈0.3769 → 0.38 |
 补充边界断言：默认深度128可处理，129失败；64字符数值可解析，65字符候选给 W_INVALID_NUMBER。
 span 例：`{cat}` 的 tag span=(1,4)，`2::a,b::` 为 (3,4)、(5,6)。
 端到端回归须验证原始输入未改写、无 catalog 时可转换；本设计阶段不新增或运行代码测试。
@@ -241,16 +234,19 @@ span 例：`{cat}` 的 tag span=(1,4)，`2::a,b::` 为 (3,4)、(5,6)。
 ## 9 待确认与建议变更
 
 - Q01：默认每层乘法还是加法？推荐乘法，三层增权 1.157625，对照加法 1.15；保留显式加法策略。
+  已裁决（2026-10-16）：采用官方乘法口径，`{}` 每层 ×1.05，`[]` 每层 ÷1.05；加法策略不支持（policy 传入即 `ValueError`）。
 - Q02：目标是否确认采用 `(tag:x)`？推荐采用，与 Anima/ComfyUI 惯用格式一致。
+  已裁决（2026-10-16）：采用 `(tag:x)`。
 - Q03：普通 tag 是否将下划线换空格？推荐先保留；artist 固定替换，避免无依据改写其它标识。
 - Q04：是否接受非正值丢弃、下限0.1、全串统一增量压缩到3.2？推荐接受并展示告警。
+  已裁决（2026-10-16）：改为硬边界截断，不做比例/统一增量压缩；权重 <=0 直接丢弃且无 warning，>3.2 截断为 3.2，其余原样保留；取消 0.1 下限。
 - Q05：`|` 和无数值开启的 `::` 是否有项目特定交替/多角色语义？推荐暂保留并告警，不自动拆角色。
 - Q06：同一逗号项内权重切换是否拆成多个 tag？推荐拆分，如 T41；否则单 tag 无法精确保留分段权重。
 - Q07：实际 Anima 接入端是否支持反斜线转义方括号、花括号、逗号和反斜线？推荐接入测试确认后固化 T33/T45/T48。
 - Q08：是否接受深度128、输入100万码点、数值64字符的上限及超限阻止导入？推荐接受，避免部分结果静默入库。
 - C60：增加纯函数转换入口及公共策略/结果/受限告警类型，供来源 nai 的导入步骤调用。
 - C61：新增 NAI 方言词法/解析职责，保留 comma-v1 行为，明确 catalog 分析为独立后续步骤。
-- C62：增加正文规范化、Decimal 权重合成和统一范围压缩职责；不新增模型或网络依赖。
+- C62：增加正文规范化、Decimal 权重合成和硬边界截断职责；不新增模型或网络依赖。
 - C63：导入预览展示转换文本及告警；资源上限告警阻止入库，保存原串、来源与转换版本以避免重复转换。
 - C64：按 T01–T50 建立 unittest 参数表，加上 span、告警排序、策略验证和资源边界断言。
 - C65：Q 项确认后更新默认策略和对应测试期望；确认前所有推荐均保持草案性质。
