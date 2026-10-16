@@ -11,6 +11,7 @@ from stylelora.runtime import Runtime
 from stylelora.runtime.instance import InstanceLock, bind_socket, publish_instance, discovery_path, attach_url
 from stylelora.runtime.contracts import Failure
 from stylelora.llm.secrets import SecretStore
+from stylelora.runtime.picker import tk_picker, available as picker_available
 
 
 def _quiet_client_resets(loop):
@@ -51,7 +52,8 @@ def main(argv=None):
         lock = InstanceLock()
         rt = Runtime(Path(os.environ['APPDATA'])/'StyleLoraAutom',
                      authority=f'127.0.0.1:{sock.getsockname()[1]}', dev_origin=args.dev_origin,
-                     secret_store=SecretStore())
+                     secret_store=SecretStore(),
+                     picker=tk_picker if picker_available() else None)
         app = create_app(rt)
         server = uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', port=sock.getsockname()[1],
                                 workers=1, proxy_headers=False, access_log=False,

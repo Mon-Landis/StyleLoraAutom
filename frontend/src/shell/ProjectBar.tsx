@@ -29,7 +29,9 @@ export function ProjectBar() {
   }, [cur.data, setProject]);
 
   const fail = (e: unknown) =>
-    setMsg(e instanceof ApiError && e.status === 501 ? '后端未实现（目录选择器不可用）' : e instanceof Error ? e.message : String(e));
+    setMsg(e instanceof ApiError && e.status === 501 ? '系统目录选择器不可用（后端未加载 tkinter）'
+      : e instanceof ApiError && e.status === 409 ? '该位置已存在同名项目'
+      : e instanceof Error ? e.message : String(e));
 
   const refresh = async () => {
     await qc.invalidateQueries({ queryKey: ['current-project'] });

@@ -133,6 +133,14 @@ async def create(request: Request):
     from stylelora.modes.profiles import get_profile
     get_profile(value.get('mode', 'style'))
     path = rt.grant_path(value['grant_id'], 'project_create')
+    if path.is_dir() and path.suffix != '.slproj':
+        # Picker grants an existing parent folder; the project dir is created inside it.
+        safe = ''.join(c for c in str(value['name']).strip() if c not in '<>:"/\\|?*' and ord(c) >= 32).rstrip(' .')
+        if not safe:
+            raise Failure(422, 'input:invalid', details={'field': 'name'})
+        path = path / f'{safe}.slproj'
+        if path.exists():
+            raise Failure(409, 'project:exists')
     return accepted(rt, 'project_create', lambda: rt.open(path, create={'name': value['name'], 'trigger_word': value.get('trigger_word', ''), 'mode': value.get('mode', 'style')}))
 
 
