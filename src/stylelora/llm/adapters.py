@@ -34,6 +34,21 @@ class _NoRedirect(urllib_request.HTTPRedirectHandler):
         return None
 
 
+USER_AGENT = 'StyleLoraAutom/0.1.0'
+
+
+def with_default_headers(headers) -> dict:
+    """Add a stable User-Agent unless the caller set one.
+
+    Some OpenAI-compatible gateways answer the urllib default UA
+    (``Python-urllib/x.y``) with 502, so it must never go out on the wire.
+    """
+    merged = dict(headers or {})
+    if not any(k.lower() == 'user-agent' for k in merged):
+        merged['User-Agent'] = USER_AGENT
+    return merged
+
+
 class UrllibTransport:
     async def __call__(self, method, url, headers, body, timeout) -> HttpResponse:
         canceled, connection = Event(), []
@@ -53,7 +68,8 @@ class UrllibTransport:
     @staticmethod
     def _send(method, url, headers, body, timeout, canceled, connection):
         deadline = time.monotonic() + timeout
-        req = urllib_request.Request(url, data=body, headers=headers, method=method)
+        req = urllib_request.Request(url, data=body, headers=with_default_headers(headers),
+                                     method=method)
         try:
             if canceled.is_set():
                 raise LlmFailure('llm:canceled', outcome='not_sent')
