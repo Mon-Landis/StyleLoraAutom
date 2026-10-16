@@ -44,6 +44,7 @@ description: 产品内部调用、只返回 JSON，用于生成、补全、清�
 | `target` | string | 默认 `nai-v5`。其它取值按 `nai-v5` 处理，不切换写法。 |
 | `allow_rewrite` | bool | 仅 complete 使用，默认 `false`。 |
 | `include_characters` | bool | 是否输出可选扩展字段 `characters`，默认 `false`，见第 5 节。 |
+| `subject_mix` | object \| null | 预留扩展：generate 的人数分布要求，默认 `null`（按第 9 节默认分布）。形如 `{"solo": 3, "multi": 1, "no_humans": 0}`，键为条数；给出时各值之和应等于 `count`，按它输出，不再套用默认分布。产品当前不发送此字段。 |
 
 `brief` 是该组的主题与特征描述（可含场景、人物特征、构图倾向）。`count` 是要生成的条目数，应为正整数，上限 [待确认]，超过 50 时建议程序拆分。
 
@@ -280,7 +281,10 @@ nl 与 expand_nl 中的典型违规写法：`in the style of`、`anime style`、
 
 同一组内的条目要在以下维度拉开差异，不要只换发色或服饰：
 
-- 人数：单人、双人、多人、无人（`brief` 允许时）。
+- 人数（默认分布，`brief` 或 `subject_mix` 另有要求时以它们为准）：
+  - 以单角色为主（`1girl` / `1boy` + `solo`），约占同组 70%–80%。
+  - 少量多角色（2–3 人），约占 20%–30%；`count` ≤ 5 时最多 1 条。
+  - 尽量不出纯景色（`no humans`）。只有 `brief` 明确要求风景、物件或无人画面时才输出。
 - 取景：`full body`、`cowboy shot`、`upper body`、`close-up`、`wide shot` 分布使用。
 - 视角：正面、侧面、`from above`、`from below`、`from behind` 轮换。
 - 场景与时间：不同地点、不同光线（白天、黄昏、夜晚、室内灯光）。
@@ -288,6 +292,7 @@ nl 与 expand_nl 中的典型违规写法：`in the style of`、`anime style`、
 
 自检清单（输出前逐项过一遍）：
 
+- 人数分布符合 `subject_mix`；未给出时符合上面的默认分布（单角色为主、少量多角色、无纯景色）。
 - 同组任意两条的「人数 + 取景 + 视角」组合不完全相同。
 - 同组内相同场景最多出现 2 次，且动作不同。
 - 条目数等于 `count`，每条 `tag` 数量在 `tag_range` 内。
