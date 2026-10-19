@@ -55,6 +55,7 @@ class TaskDTO:
     version: str = '0'
     reason_code: str | None = None
     recovery: RecoveryDTO = field(default_factory=RecoveryDTO)
+    stop_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -141,10 +142,17 @@ class TaskRegistry:
             raise Failure(503, 'task:unavailable')
         current = replace(current, task_id=task_id, project=project, version=old.version if old else '0',
                           resources=current.resources or (resource,))
+        cleanup_error = (resource.kind == 'prompt_completion' and
+                         current.reason_code == 'storage:io_error' and
+                         current.recovery.reconciliation_required)
         if task_id in self.stopping:
-            current = replace(current, status='canceling', reason_code=self.stopping[task_id].reason)
+            reason = self.stopping[task_id].reason
+            current = replace(current, status='canceling', stop_reason=reason,
+                              reason_code=current.reason_code if cleanup_error else reason)
         elif task_id in self.stopped and current.status == 'paused':
-            current = replace(current, reason_code=self.stopped[task_id])
+            reason = self.stopped[task_id]
+            current = replace(current, stop_reason=reason,
+                              reason_code=current.reason_code if cleanup_error else reason)
         elif task_id in self.stopped and current.status in ('pending', 'running'):
             self.stopped.pop(task_id, None)
             if self.coordinator is not None:

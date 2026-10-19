@@ -55,6 +55,7 @@ class EndpointConfig:
     revision: int = 0
     supports_json_schema: bool = False
     changed: bool = field(default=True, compare=False)
+    max_parallel: int = 4
 
 
 @dataclass(frozen=True)

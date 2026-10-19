@@ -5,8 +5,9 @@ export function safeFileName(name: string, ext: string): string {
   return `${base}.${ext}`;
 }
 
-export function downloadJson(data: unknown, filename: string): void {
-  const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+/** 触发浏览器下载一个 Blob（json / zip 通用）。 */
+export function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;
@@ -14,4 +15,8 @@ export function downloadJson(data: unknown, filename: string): void {
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+}
+
+export function downloadJson(data: unknown, filename: string): void {
+  downloadBlob(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), filename);
 }

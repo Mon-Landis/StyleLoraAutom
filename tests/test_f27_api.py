@@ -151,7 +151,8 @@ class GroupApiTests(unittest.TestCase):
         text = 'Fake skill for API verification.'
         svc = PromptCompletion(self.rt,skills=SkillStore([text]),skill_hash=hashlib.sha256(text.encode()).hexdigest())
         self.rt.prompt_completion = svc
-        path = self.group(); entry = self.entry(path,tag=['cat'])
+        path = self.group(); entry = self.entry(path,nl='cat')
+        before = self.client.get(path).json()
         body = {'type':'prompt_completion','ref':{'scope':'global','project_token':None,'group_id':path.rsplit('/',1)[1]},
                 'entry_ids':[entry.rsplit('/',1)[1]],'base_revision':2}
         response = self.client.post('/api/tasks',json=body,headers=self.headers())
@@ -163,4 +164,7 @@ class GroupApiTests(unittest.TestCase):
         self.assertEqual(detail.status_code,200,detail.text)
         self.assertEqual(detail.json()['status'],'done')
         self.assertEqual(detail.json()['type'],'prompt_completion')
-        self.assertEqual(self.client.get(entry).json()['completion']['task_id'],identity)
+        self.assertIsNone(self.client.get(entry).json()['completion']['task_id'])
+        self.assertEqual(detail.json()['reports'], [])
+        self.assertEqual(self.rt.llm.calls, [])
+        self.assertEqual(self.client.get(path).json(), before)

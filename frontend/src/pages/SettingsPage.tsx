@@ -8,6 +8,7 @@ import { ConnDot } from '../shell/ConnDot';
 import { Button, Field, Panel } from '../ui/primitives';
 import { ErrorView } from '../ui/ErrorView';
 import { Loading } from '../ui/slots';
+import { EndpointParallelSettings } from '../features/EndpointParallelSettings';
 
 export function SettingsPage() {
   const { theme, density, setTheme, setDensity } = useApp();
@@ -62,6 +63,8 @@ export function SettingsPage() {
         </Field>
         {mut.error != null && <ErrorView error={mut.error} feature="内容安全设置" />}
       </Panel>
+      {/* F31 §7.3：「新提示词组默认自动补齐」偏好已隐藏（后端字段保留兼容）：条目只有 nl，无可补齐的基础缺口。 */}
+      <EndpointParallelSettings />
       <Panel title="后端配置（只读）">
         {q.isLoading && <Loading />}
         {q.error && <ErrorView error={q.error} feature="配置" />}

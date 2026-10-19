@@ -44,7 +44,7 @@ class TaskApiTests(unittest.TestCase):
 
     def test_T26_T30_settings_api_CAS_and_validation(self):
         value = self.client.get('/api/settings/resources').json()
-        self.assertEqual(value['network']['token_default'], 1)
+        self.assertEqual(value['network']['token_default'], -1)
         self.assertEqual(value['compute']['reserve_bytes'], 1024**3)
         body = {'expected_revision':value['revision'], 'network':value['network'], 'compute':value['compute']}
         body['network']['global_limit'] = 3

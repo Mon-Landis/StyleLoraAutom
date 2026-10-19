@@ -15,6 +15,7 @@ export function GroupSettingsDialog({ gref, nsfw, name, etag, onClose, onDone }:
   onDone: () => void;
 }) {
   const [value, setValue] = useState(nsfw);
+  const changed = value !== nsfw;
   const s = useSubmit(
     (key) => patchGroup(gref, { nsfw: value }, etag!, key),
     () => { onDone(); onClose(); },
@@ -36,10 +37,15 @@ export function GroupSettingsDialog({ gref, nsfw, name, etag, onClose, onDone }:
           <label className="check"><input type="checkbox" checked={value} onChange={(e) => setValue(e.target.checked)} /> 这是 nsfw 词典</label>
           <p className="pg-muted">仅影响前端显示：关闭全局 NSFW 开关时，该词典会被隐藏，预览图会被模糊。</p>
         </section>
+        <section aria-labelledby="pg-set-auto">
+          <h4 id="pg-set-auto" className="pg-form__h">自动补齐</h4>
+          {/* F31 §7.3：auto_complete 仍存储/兼容，但开关隐藏；有效条目只有必填 nl，没有可自动补齐的基础缺口。 */}
+          <p className="pg-muted">当前没有可自动补齐的基础字段：每个条目只有必填的提示词（nl），变体需手动编辑。</p>
+        </section>
         {s.error && <Banner tone="danger">{s.error}</Banner>}
         <div className="pg-form__actions">
           <Button onClick={onClose}>关闭</Button>
-          <Button variant="primary" disabled={s.busy || !etag || value === nsfw} onClick={() => void s.submit()}>
+          <Button variant="primary" disabled={s.busy || !etag || !changed} onClick={() => void s.submit()}>
             {s.busy ? '保存中…' : '保存'}
           </Button>
         </div>

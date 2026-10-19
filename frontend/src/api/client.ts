@@ -25,6 +25,10 @@ export interface ReqOpts {
   idempotencyKey?: string;
   signal?: AbortSignal;
   anonymous?: boolean;
+  /** 非持久化的 POST（纯计算类，如提示词转换）：不计入「保存中」的写入计数。 */
+  silent?: boolean;
+  /** 页面卸载时尽力发送（fetch keepalive）；body 需小于 64 KiB。 */
+  keepalive?: boolean;
 }
 export interface Resp<T> {
   data: T;
@@ -67,7 +71,7 @@ function headersFor(method: string, o: ReqOpts): Record<string, string> {
 
 async function send(method: string, path: string, o: ReqOpts): Promise<Response> {
   let res: Response;
-  const isWrite = method !== 'GET';
+  const isWrite = method !== 'GET' && !o.silent;
   if (isWrite) hooks.onWrite?.(1);
   try {
     res = await fetch(buildUrl(path, o.query), {
@@ -75,6 +79,7 @@ async function send(method: string, path: string, o: ReqOpts): Promise<Response>
       headers: headersFor(method, o),
       body: o.body === undefined ? undefined : o.body instanceof FormData ? o.body : JSON.stringify(o.body),
       signal: o.signal,
+      ...(o.keepalive ? { keepalive: true } : {}),
     });
   } catch (e) {
     if (e instanceof DOMException && e.name === 'AbortError') throw e;

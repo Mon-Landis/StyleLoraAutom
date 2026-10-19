@@ -1,52 +1,32 @@
 import { useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { createPromptTask, listPromptTasks } from '../../api/more';
+import { enqueueGeneration } from '../../api/promptGroups';
+import type { GroupRef } from '../../api/promptGroupTypes';
 import { Dialog } from '../../ui/Dialog';
-import { Badge, Banner, Button, Field } from '../../ui/primitives';
-import { Empty, Loading } from '../../ui/slots';
-import { ErrorView } from '../../ui/ErrorView';
+import { Banner, Button, Field } from '../../ui/primitives';
 import { useSubmit } from './useSubmit';
 
-/**
- * 「生成」入口：原 PromptsPage「新建任务」（抽样 + LLM 任务）迁移而来，沿用 POST /api/prompt-tasks。
- * 以当前词典作为提示词源。Q13 待裁决；plan 仍是原页面的占位默认值。
- */
-export function GenerateDialog({ groupId, groupName, onClose }: { groupId: string; groupName: string; onClose: () => void }) {
-  const qc = useQueryClient();
-  const [count, setCount] = useState(1);
-  const tasks = useQuery({ queryKey: ['prompt-tasks'], queryFn: listPromptTasks });
-  const s = useSubmit(
-    () => createPromptTask({
-      // TODO(backend): plan 的维度/取值沿用旧页面占位，待生成源配置落地后改为由源提供
-      plan: { primary_dimensions: ['scene', 'lighting'], cell_values: { scene: ['forest'], lighting: ['sunlight'] }, target_count: count },
-      prompt_dictionary_ids: [groupId],
-      coverage_enabled: false,
-      optimize: false,
-    }),
-    () => void qc.invalidateQueries({ queryKey: ['prompt-tasks'] }),
-  );
-  return (
-    <Dialog title={`生成 · ${groupName}`} onClose={onClose}>
-      <div className="pg-form">
-        <div className="form-row">
-          <Field label="目标条数">
-            <input type="number" min={1} max={1000} value={count} onChange={(e) => setCount(Math.max(1, Math.floor(Number(e.target.value)) || 1))} />
-          </Field>
-          <Button variant="primary" disabled={s.busy} onClick={() => void s.submit()}>{s.busy ? '创建中…' : '创建任务'}</Button>
-        </div>
-        {s.error && <Banner tone="danger">{s.error}</Banner>}
-        <h4 className="pg-form__h">提示词任务</h4>
-        {tasks.isLoading && <Loading />}
-        {tasks.error && <ErrorView error={tasks.error} feature="提示词任务" />}
-        {tasks.data && tasks.data.items.length === 0 && <Empty title="暂无任务" />}
-        <ul className="list" aria-live="polite">
-          {tasks.data?.items.map((t, i) => (
-            <li key={String(t.task_id ?? t.id ?? i)} className="list__row">
-              <span>{t.name ?? `#${t.task_id ?? t.id}`}</span>{t.status && <Badge tone="info">{t.status}</Badge>}
-            </li>
-          ))}
-        </ul>
-      </div>
-    </Dialog>
-  );
+/** 与后端 runtime/prompt_generation.py BRIEF_LIMIT 一致。 */
+export const BRIEF_LIMIT = 4000;
+
+export function GenerateDialog({ gref, groupName, onClose, onSubmitted }: {
+  gref: GroupRef; groupName: string; onClose: () => void; onSubmitted: (taskId: string) => void;
+}) {
+  const [brief, setBrief] = useState('');
+  const [count, setCount] = useState('1');
+  const valid = !!brief.trim() && brief.length <= BRIEF_LIMIT && Number.isInteger(Number(count)) && Number(count) >= 1 && Number(count) <= 200;
+  const s = useSubmit(async (key) => {
+    const task = await enqueueGeneration(gref, brief.trim(), Number(count), key);
+    onSubmitted(task.task_id);
+    onClose();
+  });
+  return <Dialog title={`生成 · ${groupName}`} onClose={onClose}>
+    <form className="pg-form" onSubmit={(e) => { e.preventDefault(); if (valid) void s.submit(); }}>
+      <Field label="主题"><textarea aria-label="主题" required maxLength={BRIEF_LIMIT} value={brief} onChange={(e) => setBrief(e.target.value)} aria-describedby="generation-brief-count" /></Field>
+      <p id="generation-brief-count" aria-live="polite">{brief.length}/{BRIEF_LIMIT}</p>
+      <Field label="条数"><input aria-label="条数" type="number" required min={1} max={200} step={1} value={count} onChange={(e) => setCount(e.target.value)} aria-describedby="generation-count-hint" /></Field>
+      <p id="generation-count-hint">填写主题和 1–200 的整数条数，生成结果将追加到当前组。</p>
+      {s.error && <div role="alert"><Banner tone="danger">{s.error}</Banner></div>}
+      <Button type="submit" variant="primary" disabled={!valid || s.busy}>{s.busy ? '提交中…' : '生成'}</Button>
+    </form>
+  </Dialog>;
 }

@@ -10,6 +10,7 @@ import { Workbench } from './pages/Workbench';
 import { SourcesPage } from './pages/SourcesPage';
 import { PromptsPage } from './pages/PromptsPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { PromptConvertPage } from './pages/tools/PromptConvertPage';
 import { Banner, Field } from './ui/primitives';
 import { Button } from './ui/primitives';
 
@@ -65,6 +66,7 @@ export function App() {
         <Route path="/workbench" element={<Workbench />} />
         <Route path="/sources" element={<SourcesPage />} />
         <Route path="/prompts" element={<PromptsPage />} />
+        <Route path="/tools/prompt-convert" element={<PromptConvertPage />} />
         <Route path="/project" element={<ProjectInfoPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/workbench" replace />} />

@@ -46,9 +46,9 @@ def capability_fixture() -> bytes:
 
 class LlmService:
     def __init__(self, config: ConfigStore | None = None, secrets: SecretStore | None = None,
-                 *, concurrency: int = 2, transport=None, validator=None,
+                 *, concurrency: int = -1, transport=None, validator=None,
                  audit_path: Path | None = None, backoff_s: float = 1.0, network=None):
-        if concurrency < 1 or backoff_s < 0:
+        if type(concurrency) is not int or (concurrency != -1 and concurrency < 1) or backoff_s < 0:
             raise ValueError('Invalid service limits')
         self.config = config or ConfigStore()
         self.secrets = secrets or SecretStore()
@@ -173,6 +173,7 @@ class LlmService:
                     nonlocal lease
                     refs = endpoint.token_refs if index is None else (endpoint.token_refs[index],)
                     lease = await self.network.acquire(endpoint.endpoint_id, refs,
+                                                       endpoint_limit=endpoint.max_parallel,
                                                        cancel=internal, deadline=deadline)
                 try:
                     await self._wait(acquire(), internal, request.cancel, sent=sent)
@@ -286,7 +287,8 @@ class LlmService:
         endpoint = self.config.endpoint(endpoint_id)
         try:
             lease = await self.network.acquire(endpoint.endpoint_id, endpoint.token_refs,
-                                               cancel=CancelToken(), deadline=time.monotonic()+300)
+                                               cancel=CancelToken(), deadline=time.monotonic()+300,
+                                               endpoint_limit=endpoint.max_parallel)
             async with lease:
                 models = await asyncio.wait_for(self._adapter(endpoint.protocol).list_models(
                     endpoint, self.secrets.resolve_secret(lease.token_ref)), 300)

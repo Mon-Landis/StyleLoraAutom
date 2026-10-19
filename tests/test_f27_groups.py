@@ -46,18 +46,17 @@ class GroupsTests(unittest.TestCase):
 
     def test_T01_content_and_missing(self):
         self.error('schema:invalid', lambda: validate_entry({'tag': [], 'nl': ' '}))
-        for field, value in [('tag', ['cat']), ('nl', 'A cat.'), ('expand_nl', 'A cat.')]:
-            entry = validate_entry({field: value})
-            self.assertEqual(entry.completion.state, 'pending')
-            if field == 'expand_nl':
-                self.assertEqual(entry.nl, entry.expand_nl)
-                self.assertEqual(entry.completion.missing, ('tag',))
+        entry = validate_entry({'nl': 'A cat.'})
+        self.assertEqual(entry.completion.state, 'complete')
+        self.assertEqual(entry.completion.missing, ())
+        for field in ('tag', 'expand_nl'):
+            self.error('schema:invalid', lambda: validate_entry({field: 'A cat.'}))
 
     def test_T02_field_issues(self):
         with self.assertRaises(PromptError) as caught:
-            validate_entry({'tag':['cat'], 'disable':'false', 'aspect':'wide', 'oops':1})
+            validate_entry({'nl':'cat', 'disable':'false', 'aspect':'wide', 'oops':1})
         self.assertEqual({i.field for i in caught.exception.issues}, {'disable', 'aspect', 'oops'})
-        self.assertEqual(validate_entry({'tag':['Cat', 'cat']}).tag, ('cat',))
+        self.assertEqual(validate_entry({'nl':'Cat, cat'}).nl, 'Cat, cat')
 
     def test_T03_migrate_and_readonly_adapter(self):
         raw = dict(schema_version=2, kind='prompts', dictionary_id=self.ref.group_id, name='legacy', revision=7,
@@ -66,8 +65,8 @@ class GroupsTests(unittest.TestCase):
         first = self.store.load(self.ref); second = self.store.load(self.ref)
         self.assertEqual(first, second)
         self.assertEqual(first.revision, 8); self.assertTrue(first.nsfw)
-        self.assertEqual(first.entries[0].nl, '')
-        self.assertEqual(first.entries[0].expand_nl, 'Sitting.')
+        self.assertEqual(first.entries[0].nl, 'cat\n\nSitting.')
+        self.assertFalse(hasattr(first.entries[0], 'expand_nl'))
         self.assertEqual(len(list(self.store.path(self.ref).parent.glob('*.bak'))), 1)
         old = load_dictionary(self.ref.group_id, root=self.root.parent)
         self.assertIsNone(old.entries[0].rating)
@@ -209,13 +208,13 @@ class GroupsTests(unittest.TestCase):
             self.error('schema:invalid', lambda: parse_json(raw))
 
     def test_T18_export_disabled_json_no_internal_fields_and_manifest(self):
-        entry = validate_entry({'tag':['cat'], 'disable':True})
+        entry = validate_entry({'nl':'cat', 'disable':True})
         preview = self.store.publish(prepare_preview(image_bytes(), entry.entry_id), self.ref, entry.entry_id)
         self.group([replace(entry, preview=preview)], nsfw=True)
         raw = parse_json(self.exchange.export_group(self.ref))
         self.assertEqual(set(raw['prompts'][0]), CONTENT)
         self.assertTrue(raw['prompts'][0]['disable'])
-        self.assertEqual(raw['prompts'][0]['nl'], '')
+        self.assertEqual(raw['prompts'][0]['nl'], 'cat')
         package = read_package(self.exchange.export_group(self.ref, 'zip'))
         manifest = parse_json(package['group.json'])['preview_manifest'][entry.entry_id]
         self.assertEqual(manifest['sha256'], preview.sha256)
@@ -234,24 +233,25 @@ class GroupsTests(unittest.TestCase):
         self.assertEqual(Image.open(io.BytesIO(asset.thumb)).size, (320,160))
         self.assertFalse(Image.open(io.BytesIO(asset.full)).getexif())
 
-    def test_T22_seven_missing_combinations(self):
+    def test_T22_removed_field_combinations_rejected(self):
         keys = ['tag','expand_nl','nl']; values = [['cat'], 'Sitting.', 'A cat sits.']
         for mask in range(1,8):
             raw = {k:v for bit,(k,v) in enumerate(zip(keys,values)) if mask & (1<<bit)}
-            entry = validate_entry(raw)
-            missing = tuple(k for k in keys if k not in raw and not (mask == 2 and k == 'nl'))
-            self.assertEqual(entry.completion.missing, missing)
+            if mask == 4:
+                self.assertEqual(validate_entry(raw).completion.missing, ())
+            else:
+                self.error('schema:invalid', lambda: validate_entry(raw))
 
     def test_T26_render_disable_dedupe_seed(self):
-        entries = [validate_entry({'tag':['cat']}), validate_entry({'tag':['cat'], 'nl':'different'}),
+        entries = [validate_entry({'nl':'cat'}), validate_entry({'nl':'cat\n\ndifferent'}),
                    validate_entry({'nl':'A dog.'}), validate_entry({'nl':'A dog.'}), validate_entry({'nl':'Disabled.', 'disable':True})]
         group = self.group(entries, nsfw=True)
         a, warnings = freeze_groups((group,), 'full_nl', 3, 2)
         b, _ = freeze_groups((group,), 'full_nl', 3, 2)
         self.assertEqual(a,b); self.assertEqual(len(a.items),2)
         self.assertTrue(warnings)
-        self.assertEqual(render(entries[2], 'tags_plus_nl').effective_mode, 'full_nl')
-        self.error('source:insufficient', lambda: freeze_groups((group,), 'full_nl', 0, 3))
+        self.assertEqual(render(entries[2], 'tags_plus_nl').effective_mode, 'nl')
+        self.error('source:insufficient', lambda: freeze_groups((group,), 'full_nl', 0, 4))
 
     @unittest.skip('T27 为前端长按计时，本任务禁止修改 frontend/')
     def test_T27_frontend_hold_timers(self):
@@ -288,21 +288,13 @@ class GroupsTests(unittest.TestCase):
         self.assertEqual(manifest['sha256'],first.sha256)
         self.assertNotEqual(self.store.load(self.ref).entries[0].preview.sha256,first.sha256)
 
-    def test_nai_lazy_result_contract_and_row_failure(self):
-        import sys
-        from types import SimpleNamespace
-        calls = []
-        def convert(text):
-            calls.append(text)
-            if text == 'broken':
-                raise ValueError('untrusted details')
-            return SimpleNamespace(text=text.replace('kitty','cat'),warnings=[{'code':'converted'}])
-        fake = SimpleNamespace(convert_nai_to_anima=convert)
-        with patch.dict(sys.modules,{'stylelora.prompts.nai_convert':fake}):
-            preview = self.preview([{'tag':['kitty'],'nl':'A kitty.'},{'tag':['broken']}],source_format='nai')
-        self.assertEqual(preview['entries'][0]['tag'],['cat'])
+    def test_nai_normalization_and_row_failure(self):
+        preview = self.preview([{'tag':['{kitty}'],'nl':'A kitty.'},
+                                {'tag':['{broken']}], source_format='nai')
+        self.assertEqual(preview['entries'][0]['nl'],'1.05::kitty::\n\nA kitty.')
         self.assertEqual(preview['valid_count'],1); self.assertEqual(preview['skipped_count'],1)
-        self.assertTrue(preview['warnings']); self.assertIn('A kitty.',calls)
+        self.assertTrue(preview['warnings'])
+        self.assertEqual(preview['issues'][0]['row'], 2)
 
     def test_corrupt_group_isolation_and_nai_missing(self):
         self.group()
@@ -311,4 +303,5 @@ class GroupsTests(unittest.TestCase):
         self.assertEqual(len(groups),1); self.assertEqual(issues[0].code,'storage:corrupt_snapshot')
         import sys
         with patch.dict(sys.modules, {'stylelora.prompts.nai_convert': None}):
-            self.error('import:unsupported', lambda: self.preview([{'tag':['cat']}], source_format='nai'))
+            preview = self.preview([{'tag':['cat']}], source_format='nai')
+        self.assertEqual(preview['entries'][0]['nl'], 'cat')

@@ -1,4 +1,4 @@
-import type { Entry, GroupRef, GroupSummary, RenderMode, SafetySettings, Scope } from '../api/promptGroupTypes';
+import type { Entry, GroupRef, GroupSummary, PromptView, SafetySettings, Scope } from '../api/promptGroupTypes';
 import { canSelect } from './nsfw';
 
 export interface GroupFilter {
@@ -33,31 +33,28 @@ export const COMPLETION_LABEL: Record<string, string> = {
   pending: '待补全', queued: '排队中', running: '补全中', complete: '', failed: '补全失败，可重试',
   paused: '补全已暂停', canceled: '补全已取消', stale: '补全结果已过期',
 };
-export const FIELD_LABEL: Record<string, string> = { tag: 'tag', expand_nl: '追加自然语言', nl: '自然语言' };
+export const FIELD_LABEL: Record<string, string> = { nl: '提示词' };
 
 export interface EntryBlock {
-  /** tags_plus_nl：左 tag，右 expand_nl + nl 分段。 */
-  tagText: string;
-  expandNl: string;
+  /** v5：条目只显示 nl 原文本（不 trim、不改写）。 */
   nl: string;
-  /** full_nl：整块 nl；缺失时 missingNl=true，显示占位而不用回退文本伪装。 */
-  missingNl: boolean;
   statusLabel: string;
   missingLabels: string[];
 }
 
-export function entryBlock(e: Entry, mode: RenderMode): EntryBlock {
+export function entryBlock(e: Entry): EntryBlock {
   const state = e.completion?.state ?? 'complete';
   return {
-    tagText: e.tag.join(', '),
-    expandNl: e.expand_nl,
-    nl: e.nl,
-    missingNl: mode === 'full_nl' && !e.nl.trim(),
+    nl: e.nl ?? '',
     statusLabel: COMPLETION_LABEL[state] ?? state,
     missingLabels: (e.completion?.missing ?? []).map((m) => FIELD_LABEL[m] ?? m),
   };
 }
 
+/** 本地持久化的旧视图值（default / nl）统一映射为 prompt；未知值回退 prompt。 */
+export function normalizeView(v: unknown): PromptView {
+  return v === 'variants' ? 'variants' : 'prompt';
+}
 /** 逗号/换行分隔的 tag 文本 -> 数组（去空白与空项）。 */
 export function parseTags(text: string): string[] {
   return text.split(/[,\n，]/).map((t) => t.trim()).filter(Boolean);

@@ -16,7 +16,8 @@ token span 覆盖正文源区间；warning span 指向触发符号。
 `ConversionWarning(code: WarningCode, span: SourceSpan, detail: str)`；detail 仅辅助显示，不参与逻辑。
 `ConversionPolicy(bracket_mode: Literal['multiplicative'], ordinary_underscores: Literal['preserve','space'], max_weight: Decimal, decimal_places: int, max_depth: int, max_chars: int, max_numeric_chars: int)`。
 bracket_mode 仅支持 `'multiplicative'`（Q01 已裁决）；加法口径不支持，传入 `'additive'` 或其它值抛 `ValueError`。无 min_weight 字段（Q04 已裁决）。
-推荐测试实例 P：`('multiplicative', 'preserve', Decimal('3.2'), 2, 128, 1000000, 64)`。
+U21 起 `ordinary_underscores` 默认 `space`；新增偏离倍率 0.6 作为 policy 参数 `content_weight_ratio`（`Decimal`，默认 `Decimal('0.6')`，取值须在 (0, 1]，否则 `ValueError`；`prompts/nai_convert.py` `ConversionPolicy`）。
+推荐测试实例 P：`('multiplicative', 'space', Decimal('3.2'), 2, 128, 1000000, 64)`（倍率字段略）。
 调用方必须显式传 policy；不要用隐藏默认值提前决定其它未裁决 Q 项。
 校验要求：`1 < max_weight <= 3.2`；decimal_places 固定为 2。
 max_weight 必须是有限且可精确表示为两位小数的 Decimal；各资源上限为正整数。
@@ -86,7 +87,7 @@ SEP 只结束正文，不关闭括号和数值段；故 `2::a,b::` 对两个 tag
 精确小写前缀 `artist:` 在正文 trim 后识别；删除前缀，去前导空白，并添加 `@`。
 artist 正文所有 `_` 替换为空格，再折叠空白；`artist:xxx_(yyy)` 输出 `@xxx \(yyy\)`。
 空 artist 正文丢弃并 W_EMPTY_ARTIST；非空 artist 即使权重非正，也先做正文规范化。
-普通 tag 下划线默认保留（P）；space 策略才替换为空格，详见 Q03。
+普通 tag 下划线默认转空格（ordinary_underscores 默认 `space`，docs/08 U21）；`preserve` 策略才保留，详见 Q03。
 水平空白连续串压为一个空格，去首尾空白；换行已作为 SEP；空正文删除。
 所有输出 tag 以 ASCII `, ` 连接，无首尾逗号；重复 tag 保留。
 最终权重 ROUND_HALF_UP 到 0.01，删尾零及小数点；量化后等于 1 时省略权重括号。
@@ -96,17 +97,19 @@ artist 正文所有 `_` 替换为空格，再折叠空白；`artist:xxx_(yyy)` �
 ## 5 权重截断算法
 
 硬边界截断（Q04 已裁决 2026-10-16）：逐 tag 独立处理，不做比例/统一增量压缩，tag 之间互不影响。
+偏离倍率（docs/08 U21，修订 U14；U25 修订）：在钳制之前，非画师 tag 且 `w > 1` 时做 `w' = 1 + (w − 1) × 0.6`；`w ≤ 1` 原样保留（线性，不缩放）；画师 tag 不缩放。倍率 0.6 为 policy 参数 `content_weight_ratio`。
 权重 <=0 的 tag 直接丢弃，不产生 warning；不反转为正向。
-权重 >U（U=max_weight=3.2）截断为 U；其余原样保留（0.8 仍为 0.8，5 → 3.2）。
+权重 >U（U=max_weight=3.2）截断为 U 并产生 W_WEIGHT_CLAMPED；其余原样保留（0.8 → 0.8，1.5 → 1.3，5 → 倍率后 3.4 → 3.2）。
 无下限：正的小权重原样保留，只按两位小数量化；不再有 0.1 抬升规则。
-截断不产生 warning；W_NONPOSITIVE_WEIGHT、W_WEIGHT_FLOORED、W_RANGE_COMPRESSED 不再产生（见第 6 节）。
+截断到 3.2 时产生 W_WEIGHT_CLAMPED；W_NONPOSITIVE_WEIGHT、W_RANGE_COMPRESSED 不再产生（见第 6 节）。
 伪代码（在正文规范化、空 artist 删除之后执行）：
 ```text
 emitted = []
 for t in tags:
     w = t.raw_weight
+    if not t.is_artist and w > 1: w = 1 + (w - 1) * K   # K=0.6；画师与 w<=1 不缩放（U25）
     if w <= 0: continue          # 丢弃，无 warning
-    if w > U: w = U              # 硬截断，无 warning
+    if w > U: w = U; warn(W_WEIGHT_CLAMPED)   # 硬截断
     emitted.append(ScaledTag(t.value, t.raw_weight, quantize(w, '0.01', HALF_UP), t.span))
 return emitted
 ```
@@ -118,9 +121,10 @@ return emitted
 ## 6 错误恢复与受限告警
 
 WarningCode 是以下封闭枚举；新增码必须更新协议和测试，不能用任意字符串代替。
-W_NONPOSITIVE_WEIGHT、W_WEIGHT_FLOORED、W_RANGE_COMPRESSED 已删除（Q04 已裁决）：非正权重静默丢弃，超上限静默截断。
+W_NONPOSITIVE_WEIGHT、W_RANGE_COMPRESSED 已删除（Q04 已裁决）：非正权重静默丢弃；超上限截断改为产生 W_WEIGHT_CLAMPED（U21）。
 | code | 触发与恢复 |
 | --- | --- |
+| W_WEIGHT_CLAMPED | 倍率后权重 >max_weight，截到 3.2 |
 | W_UNCLOSED_BRACKET | EOF 剩余开括号逐个自动关闭，已应用权重保留 |
 | W_UNMATCHED_CLOSE | 栈空或闭括号不匹配栈顶：丢弃此闭括号，不跨层搜索 |
 | W_UNCLOSED_NUMERIC | 数值段延伸到 EOF，保留该区段权重 |
@@ -172,43 +176,43 @@ EOF 恢复告警定位对应开符号；空块告警也定位开符号，因此�
 
 ## 8 测试向量
 
-下表使用 P，除非备注覆盖策略；反引号中反斜线是实际字符，非 Python 字符串字面量。
+下表使用 P（默认策略：ordinary_underscores=space，content_weight_ratio=0.6，max_weight=3.2），除非备注覆盖策略；非画师 tag 权重 w>1 时按 `1+(w−1)×0.6` 缩放，w≤1 原样，再钳制 ≤3.2、量化 0.01；反引号中反斜线是实际字符，非 Python 字符串字面量。
 `∅` 表示空串；warnings 列是码的多重集，`×N` 表示次数；实际顺序按第 6 节断言。
 测试还需逐项断言 tokens 的 value、raw_weight、weight、span；以下表格直接驱动文本/告警断言。
 | ID | 输入 | 期望输出 | warnings / 策略备注 |
 | --- | --- | --- | --- |
 | T01 | ∅ | ∅ | 无 |
 | T02 | `cat` | `cat` | 无 |
-| T03 | `{cat}` | `(cat:1.05)` | 无 |
-| T04 | `[cat]` | `(cat:0.95)` | 无 |
-| T05 | `{{{cat}}}` | `(cat:1.16)` | 无 |
+| T03 | `{cat}` | `(cat:1.03)` | 无；1.05→1.03 |
+| T04 | `[cat]` | `(cat:0.95)` | 无；≤1 原样 |
+| T05 | `{{{cat}}}` | `(cat:1.09)` | 无；1.157625→1.09 |
 | T06 | `{{{cat}}}` | 抛 `ValueError` | 无结果；bracket_mode=additive（不支持，Q01） |
 | T07 | `[[[cat]]]` | `(cat:0.86)` | 无 |
 | T08 | （已废弃） | （已废弃） | 原加法口径向量，Q01 裁决后删除，编号保留不复用 |
 | T09 | `{[cat]}` | `cat` | 无 |
-| T10 | `{a,[b],c}` | `(a:1.05), b, (c:1.05)` | 无 |
-| T11 | `1.5::cat::` | `(cat:1.5)` | 无 |
-| T12 | `2::a,b::` | `(a:2), (b:2)` | 无 |
-| T13 | `2::a,b` | `(a:2), (b:2)` | W_UNCLOSED_NUMERIC |
-| T14 | `{2::cat::}` | `(cat:2.1)` | 无 |
-| T15 | `2::{cat}::` | `(cat:2.1)` | 无 |
+| T10 | `{a,[b],c}` | `(a:1.03), b, (c:1.03)` | 无 |
+| T11 | `1.5::cat::` | `(cat:1.3)` | 无 |
+| T12 | `2::a,b::` | `(a:1.6), (b:1.6)` | 无 |
+| T13 | `2::a,b` | `(a:1.6), (b:1.6)` | W_UNCLOSED_NUMERIC |
+| T14 | `{2::cat::}` | `(cat:1.66)` | 无；2.1→1.66 |
+| T15 | `2::{cat}::` | `(cat:1.66)` | 无 |
 | T16 | `name (series)` | `name \(series\)` | 无 |
 | T17 | `name \(series\)` | `name \(series\)` | 无 |
 | T18 | `artist:xxx_(yyy)` | `@xxx \(yyy\)` | 无 |
-| T19 | `{artist:xxx_(yyy)}` | `(@xxx \(yyy\):1.05)` | 无 |
-| T20 | `blue_hair` | `blue_hair` | 无 |
-| T21 | `blue_hair` | `blue hair` | 无；ordinary_underscores=space |
+| T19 | `{artist:xxx_(yyy)}` | `(@xxx \(yyy\):1.05)` | 无；画师不缩放 |
+| T20 | `blue_hair` | `blue hair` | 无；默认下划线转空格 |
+| T21 | `blue_hair` | `blue_hair` | 无；ordinary_underscores=preserve |
 | T22 | `-1::cat::,dog` | `dog` | 无（非正权重静默丢弃） |
 | T23 | `0::cat::` | ∅ | 无（非正权重静默丢弃） |
 | T24 | `0.01::cat::` | `(cat:0.01)` | 无（正的小权重原样保留，无下限） |
 | T25 | `0.5::cat::` | `(cat:0.5)` | 无 |
-| T26 | `a,2::b::,5::c::` | `a, (b:2), (c:3.2)` | 无（5 硬截断为 3.2，b 不受影响） |
-| T27 | `3.2::a::` | `(a:3.2)` | 无 |
-| T28 | `1.004::a::` | `a` | 无 |
-| T29 | `1.005::a::` | `(a:1.01)` | 无 |
-| T30 | `{cat` | `(cat:1.05)` | W_UNCLOSED_BRACKET |
+| T26 | `a,2::b::,5::c::` | `a, (b:1.6), (c:3.2)` | W_WEIGHT_CLAMPED×1（c：5→3.4 钳制为 3.2；b 不受影响） |
+| T27 | `3.2::a::` | `(a:2.32)` | 无；3.2→2.32 |
+| T28 | `1.004::a::` | `a` | 无；1.0024 量化为 1.00 |
+| T29 | `1.005::a::` | `a` | 无；1.003 量化为 1.00 |
+| T30 | `{cat` | `(cat:1.03)` | W_UNCLOSED_BRACKET |
 | T31 | `cat}` | `cat` | W_UNMATCHED_CLOSE |
-| T32 | `{cat]` | `(cat:1.05)` | W_UNCLOSED_BRACKET、W_UNMATCHED_CLOSE |
+| T32 | `{cat]` | `(cat:1.03)` | W_UNCLOSED_BRACKET、W_UNMATCHED_CLOSE |
 | T33 | `\{cat\}` | `\{cat\}` | 无 |
 | T34 | `{}` | ∅ | W_EMPTY_BLOCK |
 | T35 | `2::::` | ∅ | W_EMPTY_BLOCK |
@@ -216,17 +220,17 @@ EOF 恢复告警定位对应开符号；空块告警也定位开符号，因此�
 | T37 | `NaN::cat::` | `NaN::cat::` | W_INVALID_NUMBER、W_UNKNOWN_DCOLON |
 | T38 | `a` + U+007C + `b` | `a` + U+007C + `b` | W_UNSUPPORTED_ALTERNATION |
 | T39 | `a::b` | `a::b` | W_UNKNOWN_DCOLON |
-| T40 | ` a， b` + LF + `c,,` | `a, b, c` | 无 |
-| T41 | `a{b}c` | `a, (b:1.05), c` | 无 |
+| T40 | ` a， b` + LF + `c,,` | `a, b` + LF + `c`（保留源换行） | 无 |
+| T41 | `a{b}c` | `a, (b:1.03), c` | 无 |
 | T42 | `{{{cat}}}` | ∅ | W_DEPTH_LIMIT；max_depth=2 |
 | T43 | `artist:` | ∅ | W_EMPTY_ARTIST |
 | T44 | `cat,cat` | `cat, cat` | 无 |
 | T45 | `a\,b` | `a\,b` | 无；目标兼容性见 Q07 |
 | T46 | `abc` | ∅ | W_INPUT_LIMIT；max_chars=2 |
-| T47 | `{{{cat` | `(cat:1.16)` | W_UNCLOSED_BRACKET×3 |
+| T47 | `{{{cat` | `(cat:1.09)` | W_UNCLOSED_BRACKET×3 |
 | T48 | `a` + 一个反斜线 | `a` + 两个反斜线 | W_DANGLING_ESCAPE |
-| T49 | `2::a 3::b` | `(a 3:2), b` | 无；活动段的双冒号总是关闭符 |
-| T50 | `[` 重复20次 + `x` + `]` 重复20次 | `(x:0.38)` | 无；1.05^-20≈0.3769 → 0.38 |
+| T49 | `2::a 3::b` | `(a 3:1.6), b` | 无；活动段的双冒号总是关闭符 |
+| T50 | `[` 重复20次 + `x` + `]` 重复20次 | `(x:0.38)` | 无；1.05^-20≈0.3769 → 0.38（≤1 原样） |
 补充边界断言：默认深度128可处理，129失败；64字符数值可解析，65字符候选给 W_INVALID_NUMBER。
 span 例：`{cat}` 的 tag span=(1,4)，`2::a,b::` 为 (3,4)、(5,6)。
 端到端回归须验证原始输入未改写、无 catalog 时可转换；本设计阶段不新增或运行代码测试。
@@ -237,7 +241,8 @@ span 例：`{cat}` 的 tag span=(1,4)，`2::a,b::` 为 (3,4)、(5,6)。
   已裁决（2026-10-16）：采用官方乘法口径，`{}` 每层 ×1.05，`[]` 每层 ÷1.05；加法策略不支持（policy 传入即 `ValueError`）。
 - Q02：目标是否确认采用 `(tag:x)`？推荐采用，与 Anima/ComfyUI 惯用格式一致。
   已裁决（2026-10-16）：采用 `(tag:x)`。
-- Q03：普通 tag 是否将下划线换空格？推荐先保留；artist 固定替换，避免无依据改写其它标识。
+- Q03：普通 tag 是否将下划线换空格？原推荐先保留；artist 固定替换，避免无依据改写其它标识。
+  已决（docs/08 U21）：`ordinary_underscores` 默认 `'space'`，普通 tag 的下划线转空格；传 `'preserve'` 才保留。`artist:` 前缀的 tag 无论策略均替换下划线（`prompts/nai_convert.py` 约 317–321 行）。
 - Q04：是否接受非正值丢弃、下限0.1、全串统一增量压缩到3.2？推荐接受并展示告警。
   已裁决（2026-10-16）：改为硬边界截断，不做比例/统一增量压缩；权重 <=0 直接丢弃且无 warning，>3.2 截断为 3.2，其余原样保留；取消 0.1 下限。
 - Q05：`|` 和无数值开启的 `::` 是否有项目特定交替/多角色语义？推荐暂保留并告警，不自动拆角色。
@@ -250,3 +255,21 @@ span 例：`{cat}` 的 tag span=(1,4)，`2::a,b::` 为 (3,4)、(5,6)。
 - C63：导入预览展示转换文本及告警；资源上限告警阻止入库，保存原串、来源与转换版本以避免重复转换。
 - C64：按 T01–T50 建立 unittest 参数表，加上 span、告警排序、策略验证和资源边界断言。
 - C65：Q 项确认后更新默认策略和对应测试期望；确认前所有推荐均保持草案性质。
+
+## 10 反向：Anima → NAI
+
+规则来源：docs/08 U21、U25。入口：`convert_anima_to_nai(text, *, policy=None) -> ConversionResult`（`src/stylelora/prompts/anima_convert.py`）。
+
+- 下划线：空格转下划线。画师 `@name` 转 `artist:name`。
+- 括号：`(tag)` ×1.1、`[tag]` ÷1.1、`(tag:w)` 显式权重。
+- 权重：非画师 tag 且 `w > 1` 时 `w' = 1 + (w − 1) / 0.6`，不钳 3.2；`w ≤ 1` 原样保留（U25，与正向互逆，无需下限）；≤0（含量化为 0）丢弃不告警。画师权重不缩放。
+- 权重数值写法：`w::tag::`。
+- 自然语言行透传：按行识别，含句末标点或任一逗号段 ≥4 词的行原样保留，不做上述转换；其余行按 tag 转换。
+- 告警沿用第 6 节 `{code,start,end}` 结构。
+
+HTTP 端点（U22）：`POST /api/tools/prompt-convert`
+
+```text
+请求  { direction: 'nai_to_anima' | 'anima_to_nai', text: string }
+响应  { text: string, warnings: [{ code, start, end }] }
+```

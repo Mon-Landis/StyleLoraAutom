@@ -1,5 +1,6 @@
 """F27 HTTP contract. Writes use group-level strong ETags and durable receipts."""
 import json
+import re
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
 from stylelora.runtime.prompt_groups import service
@@ -8,7 +9,7 @@ from stylelora.prompts.groups import GroupRef, content
 from stylelora.prompts.types import plain
 from stylelora.prompts.validation import require, strict_loads
 from ..dependencies import runtime
-from ..uploads import upload
+from ..uploads import upload, IMPORT_BODY_LIMIT, IMPORT_FILE_LIMIT, IMPORT_FILE_COUNT
 from .session import resource
 
 router = APIRouter(prefix='/api')
@@ -145,18 +146,40 @@ async def image(group_id: str, entry_id: str, request: Request):
 async def preview(request: Request):
     rt = runtime(request)
     if 'multipart/form-data' in request.headers.get('content-type', ''):
-        form = await upload(request, {'options', 'file'}, {'file'}, limit=101*1024**2)
+        form = await upload(request, {'options', 'file', 'files'}, set(), limit=IMPORT_BODY_LIMIT,
+                            repeated=('files',), file_limit=IMPORT_FILE_LIMIT,
+                            file_count=IMPORT_FILE_COUNT, limit_code='import:limit')
         options = strict_loads(form.get('options', '{}'))
+        require(isinstance(options, dict))
+        if options.get('format') == 'nai_images':
+            require('files' in form and 'file' not in form)
+            return await rt.product.call(lambda: service(rt).exchange.preview_images(form['files'], options, key(request)))
+        require('file' in form and 'files' not in form)
         data = form['file']
     else:
         value = await request.json()
         require(isinstance(value, dict) and not set(value)-{'options', 'grant_id', 'data'})
         options = value.get('options', {})
+        require(isinstance(options, dict))
         if options.get('format') == 'folder':
             data = rt.grant_path(value.get('grant_id'), 'import_root')
         else:
             data = json.dumps(value.get('data'), ensure_ascii=False, allow_nan=False).encode('utf-8')
     return await rt.product.call(lambda: service(rt).exchange.preview_import(data, options, key(request)))
+
+
+@router.get('/prompt-imports/{preview_id}/entries/{entry_id}/preview')
+async def import_image(preview_id: str, entry_id: str, request: Request):
+    rt = runtime(request)
+    require(not set(request.query_params) - {'size'})
+    data, sha = await rt.product.call(lambda: service(rt).exchange.preview_image(
+        preview_id, entry_id, request.query_params.get('size', 'thumb')))
+    headers = {'ETag': '"' + sha + '"', 'Cache-Control': 'private, no-cache',
+               'Vary': 'Authorization', 'X-Content-Type-Options': 'nosniff'}
+    tags = [tag.strip().removeprefix('W/') for tag in request.headers.get('if-none-match', '').split(',')]
+    if '*' in tags or headers['ETag'] in tags:
+        return Response(status_code=304, headers=headers)
+    return Response(data, media_type='image/webp', headers=headers)
 
 
 @router.post('/prompt-imports/{preview_id}/confirm')
@@ -166,8 +189,8 @@ async def confirm(preview_id: str, request: Request):
     def work():
         svc = service(rt)
         frozen = svc.exchange.previews.get(preview_id)
-        require(frozen is not None, 'preview:expired')
-        expected = revision(request, frozen[1]['base_revision'] == 0)
+        expected = revision(request, (frozen[1]['base_revision'] == 0) if frozen else
+                            request.headers.get('if-none-match') == '*')
         ref = GroupRef.parse(value['ref']) if 'ref' in value else None
         return svc.exchange.commit_import(preview_id, value['digest'], expected, key(request), ref)
     return result(await rt.product.call(work))
@@ -176,14 +199,17 @@ async def confirm(preview_id: str, request: Request):
 @router.get('/prompt-groups/{group_id}/export')
 async def export(group_id: str, request: Request):
     rt = runtime(request); format = request.query_params.get('format', 'json')
+    require(format in ('json', 'txt', 'zip', 'folder', 'nai_image_zip'))
     def work():
         svc = service(rt); ref = svc.ref(group_id, request.query_params)
         return svc.exchange.export_group(ref, format)
     artifact = await rt.product.call(work)
     if format == 'folder':
         return artifact
-    return Response(artifact, media_type='application/json' if format == 'json' else 'application/zip',
-                    headers={'Content-Disposition': f'attachment; filename="{group_id}.{format}"'})
+    extension = 'zip' if format in ('zip', 'nai_image_zip') else format
+    filename = re.sub(r'[^A-Za-z0-9_-]', '_', group_id)[:128] or 'prompt-group'
+    return Response(artifact, media_type={'json': 'application/json', 'txt': 'text/plain; charset=utf-8'}.get(format, 'application/zip'),
+                    headers={'Content-Disposition': f'attachment; filename="{filename}.{extension}"'})
 
 
 @router.get('/prompt-artifacts/{handle}')
@@ -204,7 +230,7 @@ async def settings(request: Request):
 @router.patch('/settings')
 async def patch_settings(request: Request):
     rt, value, expected = runtime(request), await request.json(), revision(request)
-    require(isinstance(value, dict) and not set(value)-{'nsfw_enabled', 'nsfw_display_mode', 'image_display'})
+    require(isinstance(value, dict) and not set(value)-{'nsfw_enabled', 'nsfw_display_mode', 'image_display', 'prompt_auto_complete_default'})
     request_key = key(request)
     return result(await rt.product.call(lambda: rt.product.update_safety(value, expected, request_key)))
 

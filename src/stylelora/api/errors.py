@@ -21,8 +21,17 @@ def translate(exc):
                   'completion:stale': 409, 'completion:unavailable': 503,
                   'storage:io_error': 500, 'storage:corrupt_snapshot': 500,
                   'preview:expired': 410, 'image:too_large': 413, 'import:limit': 413,
-                  'import:unsupported': 422}.get(exc.code, 404 if 'not_found' in exc.code else 409 if 'conflict' in exc.code else 422)
-        return Failure(status, exc.code, details={'issues': plain(exc.issues)})
+                  'import:unsupported': 422, 'image:invalid': 422,
+                  'import:metadata_mismatch': 422, 'import:unsafe_archive': 422,
+                  'import:empty': 422, 'schema:invalid': 422,
+                  'normalization:syntax': 422, 'normalization:empty': 422,
+                  'import:conversion_failed': 422, 'image:not_found': 404,
+                  'entry:id_conflict': 409}.get(exc.code, 404 if 'not_found' in exc.code else 409 if 'conflict' in exc.code else 422)
+        details = {'issues': plain(exc.issues)}
+        from stylelora.prompts.group_image_import import ImageImportError
+        if isinstance(exc, ImageImportError):
+            details['files'] = plain(exc.files)
+        return Failure(status, exc.code, details=details)
     if isinstance(exc, BackendError):
         return Failure(503, 'dependency:unavailable')
     for cls, status, code in (

@@ -59,6 +59,13 @@ class SchemaDictionaryTests(unittest.TestCase):
         p=preview_import(b'\xef\xbb\xbfforest, A tree grows.\nonly unknown words',format='txt',kind='prompts',catalog=catalog())
         self.assertEqual(p.entries[0].natural_language,'A tree grows.'); self.assertEqual(p.issues[0].row,2)
         self.assertFalse(valid_rows_preview(p).issues)
+        # U26: NL paragraphs are stored with real newlines and escaped as literal \n in TXT.
+        multi=dictionary([PromptEntry(('forest',),'A tree grows.\n\nA bird sits on it.')])
+        with self.assertWarns(UserWarning): out=export_value(multi,'txt')
+        self.assertEqual(out,b'forest, A tree grows.\\n\\nA bird sits on it.')
+        self.assertEqual(preview_import(out,format='txt',kind='prompts',catalog=catalog()).entries[0].natural_language,
+                         'A tree grows.\n\nA bird sits on it.')
+        self.assertEqual(preview_import(export_value(multi,'csv'),format='csv',kind='prompts',catalog=catalog()).entries,multi.entries)
         self.assertEqual(preview_import(b'forest\tgeneral',format='txt',kind='features',dimension='scene').features[0].rating,'general')
         with self.assertRaises(PromptError): preview_import(b'\xff',format='txt',kind='prompts')
         with TemporaryDirectory() as root:

@@ -116,10 +116,10 @@ describe('hold durations', () => {
   });
   it('menu items wire the durations', () => {
     const noop = () => {};
-    const entry = entryMenuItems({ disabled: false, onEdit: noop, onCopyJson: noop, onToggleDisable: noop, onDelete: noop, onComplete: noop });
+    const entry = entryMenuItems({ disabled: false, onEdit: noop, onCopyJson: noop, onToggleDisable: noop, onDelete: noop });
     expect(entry.find((i) => i.key === 'delete')?.hold?.ms).toBe(500);
-    expect(entry.map((i) => i.key)).toEqual(['edit', 'copy', 'disable', 'complete', 'delete']);
-    expect(entryMenuItems({ disabled: true, onEdit: noop, onCopyJson: noop, onToggleDisable: noop, onDelete: noop, onComplete: noop }).find((i) => i.key === 'disable')?.label).toBe('启用');
+    expect(entry.map((i) => i.key)).toEqual(['edit', 'copy', 'disable', 'delete']);
+    expect(entryMenuItems({ disabled: true, onEdit: noop, onCopyJson: noop, onToggleDisable: noop, onDelete: noop }).find((i) => i.key === 'disable')?.label).toBe('启用');
     const full = groupMenuItems({ entryCount: 2, onEdit: noop, onExport: noop, onDelete: noop });
     expect(full.find((i) => i.key === 'delete')?.hold?.ms).toBe(2000);
     const empty = groupMenuItems({ entryCount: 0, onEdit: noop, onExport: noop, onDelete: noop });
@@ -145,7 +145,7 @@ describe('context menu long-press delete', () => {
   it('entry delete fires once after 0.5s, not before; early release cancels', () => {
     const onDelete = vi.fn();
     const noop = () => {};
-    const items = entryMenuItems({ disabled: false, onEdit: noop, onCopyJson: noop, onToggleDisable: noop, onDelete, onComplete: noop });
+    const items = entryMenuItems({ disabled: false, onEdit: noop, onCopyJson: noop, onToggleDisable: noop, onDelete });
     render(<ContextMenu x={0} y={0} label="条目菜单" items={items} onClose={noop} />);
     const btn = screen.getByText('长按删除（0.5 秒）').closest('button')!;
     fireEvent.pointerDown(btn);

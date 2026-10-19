@@ -40,6 +40,10 @@
 | POST | P/exports | `{scheme_id,preview_id,digest}` | ExportView: export_id,project_id,status,selected,exported,skipped,failed,report_url,relative_dir,version |
 | GET | P/exports/{export_id} | — | ExportView；planned/running 继续轮询，finished 为成功 |
 | GET | /api/config | — | Record；设置页按键值展示 |
+| GET | /api/llm/endpoints?limit=1000&cursor | — | Page<LlmEndpoint>；`api/llmEndpoints.ts` 循环 next_cursor 取全；LlmEndpoint: endpoint_id,base_url,protocol,models[{name,supports_images,wire_name?,response_aliases?}],token_refs[{token_ref}],supports_json_schema,max_parallel,version |
+| PUT | /api/llm/endpoints/{endpoint_id} | `{base_url,protocol,models,token_refs:[token_ref],supports_json_schema,max_parallel}` + If-Match（endpoint.version） | LlmEndpoint；`saveEndpointParallel` 回传其余字段原值，仅改 max_parallel |
+
+端点 `max_parallel`：int，-1 表示不限，否则须 ≥1，缺省 4。PUT/POST 传 0、负数（非 -1）、小数、非 int（含 bool、字符串）→ 422 `input:invalid`；PUT 不传该字段时沿用旧值，POST 不传时为 4。该值按端点独立，作为 `NetworkController.acquire(endpoint_limit=...)` 传入，限制该端点同时在途的发送数（后端 `runtime/catalog.py`、`llm/service.py`）。前端缺字段时按 4 显示（`endpoint.max_parallel ?? 4`）。PUT 的 `token_refs` 为 UUID 字符串列表，不带 has_secret；PUT 缺 `token_refs` 时后端按空列表保存（`value.get('token_refs', [])`），即清空令牌引用，故前端必须回传。
 
 `client.ts` 的 request/get/post/put/patch、more.ts 重导出的 put/patch 是通用传输函数，不固定增加端点。响应适配器另读取 ETag、Location、status；SSE 的 topics 匹配事件前缀 `job`，不是 `jobs`。
 

@@ -11,9 +11,10 @@ from pathlib import Path
 from uuid import uuid4
 from PIL import Image, ImageOps, UnidentifiedImageError
 from .dictionaries import LOCK, _write, digest
-from .groups import Group, GroupRef, PreviewRef, decode_group, migrate_v2
+from .groups import Group, GroupRef, PreviewRef, decode_group, migrate_group
+from .group_legacy import legacy_content_issues
 from .types import PromptError, Issue, plain
-from .validation import require, strict_loads, identifier
+from .validation import require, strict_loads, identifier, PROMPT_GROUP_VERSIONS
 
 JSON_LIMIT = 10 * 1024**2
 IMAGE_LIMIT = 10 * 1024**2
@@ -21,6 +22,41 @@ PIXEL_LIMIT = 40_000_000
 ZIP_LIMIT = 100 * 1024**2
 EXPANDED_LIMIT = 200 * 1024**2
 ENTRY_LIMIT = 10000
+
+
+def _migration_backup(backup, original):
+    """Publish only verified bytes, retaining both valid and damaged old backups."""
+    with tempfile.NamedTemporaryFile(dir=backup.parent, prefix=backup.name + '.',
+                                     suffix='.tmp', delete=False) as stream:
+        staging = Path(stream.name)
+        try:
+            stream.write(original)
+            stream.flush()
+            os.fsync(stream.fileno())
+        except BaseException:
+            stream.close()
+            staging.unlink(missing_ok=True)
+            raise
+    try:
+        require(staging.read_bytes() == original, 'storage:corrupt_snapshot')
+        while True:
+            if backup.exists():
+                if backup.read_bytes() == original:
+                    return
+                try:
+                    previous = strict_loads(backup.read_bytes())
+                except PromptError:
+                    previous = None
+                require(not isinstance(previous, dict), 'storage:corrupt_snapshot')
+                backup.rename(backup.with_name(backup.name + f'.corrupt-{time.time_ns()}-{uuid4().hex}'))
+            try:
+                # A hard link publishes atomically and fails if a backup already exists.
+                os.link(staging, backup)
+                return
+            except FileExistsError:
+                continue
+    finally:
+        staging.unlink(missing_ok=True)
 
 
 @dataclass(frozen=True)
@@ -57,8 +93,9 @@ def prepare_preview(data, entry_id):
 
 
 class GroupStore:
-    def __init__(self, product_root, project=lambda: None):
+    def __init__(self, product_root, project=lambda: None, *, auto_complete_default=lambda: True):
         self.product_root, self.project = Path(product_root), project
+        self.auto_complete_default = auto_complete_default
         self.leases = set()
 
     def root(self, ref):
@@ -78,27 +115,40 @@ class GroupStore:
                 if absent:
                     return None
                 raise PromptError('dictionary:not_found')
-            raw = strict_loads(path.read_bytes())
+            original = path.read_bytes()
+            raw = strict_loads(original)
             require(isinstance(raw, dict))
-            if raw.get('schema_version') in (1, 2):
-                require(ref.scope == 'global')
-                migrated = migrate_v2(raw)
-                backup = path.with_suffix('.v2.bak')
-                if not backup.exists():
-                    _write(backup, raw)
-                require(digest(strict_loads(backup.read_bytes())) == digest(raw), 'storage:corrupt_snapshot')
-                migrated = replace(migrated, _operations={'migration:v3': {'digest': digest(raw), 'result': {'revision': migrated.revision, 'nsfw_promoted': migrated.nsfw}}})
-                _write(path, plain(migrated))
-                raw = plain(migrated)
-            require(raw.get('schema_version') == 3, 'newer_version')
+            version = raw.get('schema_version')
+            require(type(version) is int and version in PROMPT_GROUP_VERSIONS, 'newer_version')
+            require(raw.get('dictionary_id') == ref.group_id and raw.get('scope', 'global') == ref.scope)
+            if version in (1, 2, 3, 4):
+                default = self.auto_complete_default()
+                require(type(default) is bool)
+                if raw.get('_deleted'):
+                    migrated = raw | {'schema_version': 5, 'revision': raw['revision'] + 1,
+                                      'scope': ref.scope, 'auto_complete': raw.get('auto_complete', default),
+                                      'prompt_format': 'nai', 'normalization_version': 'nai-storage-v1'}
+                else:
+                    migrated = plain(migrate_group(raw, auto_complete_default=default))
+                operations = dict(raw.get('_operations', {}))
+                operations['migration:v5'] = {'digest': digest(raw), 'result': {
+                    'revision': migrated['revision'], 'source_version': version,
+                    'warnings': plain(tuple(issue for row in raw.get('entries', [])
+                        for issue in legacy_content_issues(row))) if version in (3, 4) and not raw.get('_deleted') else [],
+                    'nsfw_promoted': version in (1, 2) and migrated.get('nsfw', False)}}
+                migrated['_operations'] = operations
+                backup = path.with_suffix(f'.v{version}.bak')
+                _migration_backup(backup, original)
+                _write(path, migrated)
+                raw = migrated
             require(raw.get('dictionary_id') == ref.group_id and raw.get('scope') == ref.scope)
             return raw
         except OSError:
             raise PromptError('storage:io_error') from None
         except (ValueError, TypeError, KeyError) as exc:
-            if isinstance(exc, PromptError) and exc.code in ('dictionary:not_found', 'newer_version', 'storage:io_error'):
+            if isinstance(exc, PromptError) and exc.code in ('dictionary:not_found', 'newer_version', 'storage:io_error', 'import:limit', 'normalization:syntax', 'normalization:empty', 'import:conversion_failed'):
                 raise
-            raise PromptError('storage:corrupt_snapshot') from None
+            raise PromptError('storage:corrupt_snapshot', issues=exc.issues if isinstance(exc, PromptError) else ()) from None
 
     def load(self, ref):
         with LOCK:
@@ -122,11 +172,14 @@ class GroupStore:
                     try:
                         group = self.load(GroupRef(scope, token, path.stem))
                         groups.append(group)
-                        if group._operations.get('migration:v3', {}).get('result', {}).get('nsfw_promoted'):
+                        if any(group._operations.get(key, {}).get('result', {}).get('nsfw_promoted') for key in ('migration:v3', 'migration:v4', 'migration:v5')):
                             issues.append(Issue('migration:nsfw_promoted', field=group.dictionary_id, severity='warning'))
+                        report = group._operations.get('migration:v5', {}).get('result', {})
+                        issues.extend(Issue(**warning) for warning in report.get('warnings', ()))
                     except PromptError as exc:
                         if exc.code != 'dictionary:not_found':
                             issues.append(Issue(exc.code if exc.code == 'newer_version' else 'storage:corrupt_snapshot', field=path.stem))
+                            issues.extend(exc.issues)
             except OSError:
                 issues.append(Issue('storage:io_error', field=scope))
         return tuple(groups), tuple(issues)
@@ -155,11 +208,13 @@ class GroupStore:
             operations[request_key] = {'digest': signature, 'result': result}
             if value is None:
                 require(old is not None, 'dictionary:not_found')
-                obj = dict(schema_version=3, dictionary_id=ref.group_id, scope=ref.scope,
+                obj = dict(schema_version=5, dictionary_id=ref.group_id, scope=ref.scope,
                            revision=revision, _deleted=True, _operations=operations)
             else:
+                require(isinstance(value, Group), 'newer_version')
                 require(value.dictionary_id == ref.group_id and value.scope == ref.scope)
                 obj = plain(replace(value, revision=revision, _operations=operations))
+                decode_group(obj)
             try:
                 _write(self.path(ref), obj)
             except OSError:

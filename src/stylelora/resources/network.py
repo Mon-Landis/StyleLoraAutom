@@ -11,9 +11,9 @@ from stylelora.llm.types import LlmFailure
 
 @dataclass(frozen=True)
 class NetworkPolicy:
-    global_limit: int = 2
-    endpoint_default: int = 2
-    token_default: int = 1
+    global_limit: int = -1
+    endpoint_default: int = 4
+    token_default: int = -1
     endpoint_limits: Mapping[str, int] = field(default_factory=dict)
     token_limits: Mapping[str, int] = field(default_factory=dict)
     backoff_base_s: float = 1.0
@@ -27,7 +27,7 @@ class NetworkPolicy:
             object.__setattr__(self, key, MappingProxyType(dict(value)))
         limits = (self.global_limit, self.endpoint_default, self.token_default,
                   *self.endpoint_limits.values(), *self.token_limits.values())
-        if any(type(v) is not int or v < 1 for v in limits):
+        if any(type(v) is not int or (v != -1 and v < 1) for v in limits):
             raise LlmFailure('resource:invalid_policy', outcome='not_sent')
         if any(type(v) not in (int, float) or not math.isfinite(v) or v < 0
                for v in (self.backoff_base_s, self.backoff_cap_s)):
@@ -72,26 +72,33 @@ class NetworkController:
         self.revision += 1
         return self.revision
 
-    def _select(self, endpoint, refs):
+    def _select(self, endpoint, refs, endpoint_limit):
         policy, now = self.policy, self.clock()
-        if (self.active >= policy.global_limit or
-                self.endpoints[endpoint] >= policy.endpoint_limits.get(endpoint, policy.endpoint_default) or
+        limit = policy.endpoint_default if endpoint_limit is None else endpoint_limit
+        explicit = policy.endpoint_limits.get(endpoint, -1)
+        if ((policy.global_limit != -1 and self.active >= policy.global_limit) or
+                (limit != -1 and self.endpoints[endpoint] >= limit) or
+                (explicit != -1 and self.endpoints[endpoint] >= explicit) or
                 self.endpoint_cooldowns.get(endpoint, 0) > now):
             return None
         start = self.cursors.get(endpoint, 0) % len(refs)
         for offset in range(len(refs)):
             index = (start + offset) % len(refs)
             ref = refs[index]
-            if (self.tokens[ref] < policy.token_limits.get(ref, policy.token_default) and
+            token_limit = policy.token_limits.get(ref, policy.token_default)
+            if ((token_limit == -1 or self.tokens[ref] < token_limit) and
                     self.cooldowns.get((endpoint, ref), 0) <= now):
                 return index
         return None
 
-    async def acquire(self, endpoint_id, token_refs, *, cancel, deadline):
+    async def acquire(self, endpoint_id, token_refs, *, cancel, deadline, endpoint_limit=None):
+        if endpoint_limit is not None and (type(endpoint_limit) is not int or
+                                          (endpoint_limit != -1 and endpoint_limit < 1)):
+            raise LlmFailure('resource:invalid_policy', outcome='not_sent')
         refs = tuple(dict.fromkeys(token_refs))
         if not refs:
             raise LlmFailure('llm:secret_missing', outcome='not_sent')
-        waiter = (object(), endpoint_id, refs)
+        waiter = (object(), endpoint_id, refs, endpoint_limit)
         self.waiters.append(waiter)
         try:
             while True:
@@ -101,9 +108,9 @@ class NetworkController:
                 if remaining <= 0:
                     raise LlmFailure('resource:timeout', outcome='not_sent')
                 async with self.lock:
-                    eligible = next((w for w in self.waiters if self._select(w[1], w[2]) is not None), None)
+                    eligible = next((w for w in self.waiters if self._select(w[1], w[2], w[3]) is not None), None)
                     if eligible is waiter:
-                        index = self._select(endpoint_id, refs)
+                        index = self._select(endpoint_id, refs, endpoint_limit)
                         self.cursors[endpoint_id] = (index + 1) % len(refs)
                         self.active += 1
                         self.endpoints[endpoint_id] += 1

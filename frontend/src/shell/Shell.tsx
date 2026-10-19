@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { useUi } from '../state/ui';
 import { useSafetySync } from '../features/useSafetySync';
+import { NoticeHost } from './NoticeHost';
 import { Sidebar } from './Sidebar';
 import { TopBar } from './TopBar';
 
@@ -15,6 +16,7 @@ export function Shell({ children }: { children: ReactNode }) {
         <Sidebar />
         <main className="shell__main">{children}</main>
       </div>
+      <NoticeHost />
     </div>
   );
 }

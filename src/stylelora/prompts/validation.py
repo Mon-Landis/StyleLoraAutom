@@ -14,6 +14,8 @@ from stylelora.tagging.tokenizer import syntax_of, tokenize_prompt
 from stylelora.tagging.catalog import LocalCatalog
 from .types import *
 
+PROMPT_GROUP_VERSIONS = (1, 2, 3, 4, 5)
+
 
 def require(condition, code='schema:invalid'):
     if not condition:
@@ -308,7 +310,13 @@ def validate_composer_result(text_value, request, *, catalog=None, terms=None, p
     require(len(set(keys)) == len(keys) and all(t == normalize_tag(t) for t in result.tags), 'llm:schema_contract')
     require((bool(result.natural_language) if request.nl_enabled else result.natural_language is None), 'llm:schema_contract')
     if result.natural_language:
-        require(not re.search(r'[\u4e00-\u9fff\n\r]', result.natural_language), 'llm:schema_contract')
+        # U26: NL may contain paragraphs. Normalize line endings, trim line ends,
+        # and collapse runs of blank lines to a single blank line.
+        require(not re.search(r'[\u4e00-\u9fff]', result.natural_language), 'llm:schema_contract')
+        nl_text = '\n'.join(line.rstrip() for line in re.sub(r'\r\n?', '\n', result.natural_language).split('\n'))
+        nl_text = re.sub(r'\n{3,}', '\n\n', nl_text).strip()
+        require(bool(nl_text), 'llm:schema_contract')
+        object.__setattr__(result, 'natural_language', nl_text)
     require(request.aspect_hint is None or result.aspect == request.aspect_hint, 'llm:schema_contract')
     inputs = {normalize_tag(t, catalog) for tags in request.features.values() for t in tags}
     added = {normalize_tag(t, catalog) for t in result.added}

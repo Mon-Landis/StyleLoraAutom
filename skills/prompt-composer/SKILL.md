@@ -29,6 +29,7 @@ The program passes one JSON object:
 | `composition_mode` | string | `"normal"` or `"scenery_first"` (see section 3.4). |
 | `tag_range` | [int, int] | Allowed tag count `[min, max]`. Default `[15, 40]`. |
 | `aspect_hint` | string \| null | 可选，缺省等同 `null`。取值 `"landscape"` / `"portrait"` / `"square"`：非 null 时输出的 `aspect` 照抄该值；为 `null` 或缺省时按 3.6 自行判断。取值不在这三个之内按 `null` 处理。 |
+| `text_mode` | string | 预留扩展：`tag` / `tag_nl` / `nl`。缺省与非法值按 `tag_nl`（现有行为：`tags` 加一段 `natural_language`）。**当前代码尚未传入此字段**，规则见 3.7 节。 |
 
 If the input is not parseable, lacks `features`, or `features` has no usable tags, return `status="invalid_input"` (section 5).
 
@@ -81,6 +82,7 @@ Applies when the features contain two or more characters. These reduce tag bleed
 7. **Strict separation**: in `tags`, keep each character's tags contiguous. In NL, write each character in a separate sentence group; do not interleave descriptions.
 8. **Face-out-of-frame handling**: when a character's face is out of frame (or mostly), omit that character's expression, eye and fine hair tags to prevent a second face or split panel.
 9. **Avoid dual-angle conflict**: do not combine two strong opposing angles (e.g. `from behind` + `from side`) unless packed into one phrase. This is a frequent cause of storyboard / multi-panel output.
+10. **Bleed-prone traits**: halo, wings, horns, heterochromia and similar loud features tend to be painted onto the wrong character. If only one character has such a feature and the input gives it, prefer binding it in NL with an owner phrase ("The girl on the left has a halo above her head.") and keep it off the shared part of the tag line; give the other character their own distinctive visible traits inside their own block. Never fix bleed with weights here (no weight syntax is allowed in this skill). Only apply this to features the input actually contains; do not invent them, and do not drop an input tag solely for this reason without recording it in `dropped`.
 
 ### 3.4 Composition mode
 
@@ -219,6 +221,47 @@ Applies when the features contain two or more characters. These reduce tag bleed
 - `aspect` 与 `tags` 不冲突即可。不得为了配合 `aspect` 增删或改写任何 tag；不得因 `aspect` 触发 `added` / `dropped`。
 - `tags` 与 `natural_language` 里不得出现画幅类词（`landscape orientation`、`vertical composition`、`square image` 等，完整清单见 3.5 H 类）。图幅只通过 `aspect` 字段表达。
 - 取景类 tag（`wide shot`、`full body`、`upper body`、`close-up`）照常按 3.1 第 7 类输出，不受 `aspect` 影响。
+
+### 3.7 文本模式（`text_mode`，预留）
+
+**当前代码尚未传入 `text_mode`**。缺省与非法值按 `tag_nl`（默认值：`tag_nl`，即现有行为：`tags` 加一段 `natural_language`）。本节只调整 `natural_language` 的写法侧重，**输出 JSON 合同不变**，校验规则照旧：`tags` 必填且数量在 `tag_range` 内，`natural_language` 为英文，无中文；可分段，段间用一个空行（`\n\n`）。
+
+**与 `nl_enabled` 的关系**（`nl_enabled` 是现有合同字段，优先）：
+
+- `nl_enabled=false`：一律按 `tag`，`natural_language` 为 `null`，忽略 `text_mode`。
+- `nl_enabled=true`：`text_mode` 区分 `tag_nl` 与 `nl`。`text_mode=tag` 与 `nl_enabled=true` 矛盾，按 `tag_nl` 处理 [待确认]。
+
+**三种模式**（程序负责把 `tags` 与 `natural_language` 拼成最终提示词，你不拼）：
+
+| 模式 | NAI 提交文本 | Anima 形态（对照，目前不提交） | 你的写法 |
+|------|------|------|------|
+| `tag` | 只有 tag，逗号连接 | 单行 tag | `natural_language=null`，所有信息靠 tag 承载 |
+| `tag_nl`（默认） | tag 逗号连接后以 `, ` 接上 NL，同一串混写（`prompts/seeds.py` 的现有拼法） | tag 行、空行、NL 段 | tag 锚定，NL 补视角、姿势、位置关系 |
+| `nl` | 只有 NL | 一段英文 NL | NL 独立完整，覆盖全部 `tags` 的核心内容 |
+
+**写法差异**：
+
+- NAI 倾向 tag 与自然语言混写。`tag_nl` 下 NL 紧跟在 tag 之后，是补充：不重复 tag 已说清的事实，只写视角、姿势细节、位置关系和可见光线。
+- Anima 倾向 tag 与自然语言分开：tag 一行，空行，再接一段英文 NL。分段后 NL 要能单独读通，所以按 3.3 逐人物成句，开头写明位置或身份，不以逗号或从句接续 tag。多人时 NL 可按人物分段，段间一个空行（`\n\n`）；单人或简单画面写一段即可。
+- `nl` 模式下 `tags` 仍要按 3.1 写满（合同要求），NL 与 tags 保持一致，不夹 tag 串，不堆逗号分隔的短词。
+- 无论哪种模式，NL 都不得含 3.5 禁用词、画幅类词，也不得含 `camera`。
+- NAI 与 Anima 互转由产品内确定性转换器完成：下划线与空格互转；非画师权重大于 1 时 NAI→Anima 为 `anima=1+(nai-1)×0.6`，反向 `nai=1+(anima-1)/0.6`，权重 ≤1 两向不变；Anima 侧上限 3.2；画师权重不缩放；`artist:name` 与 `@name` 互转。你不输出权重与画师，也不自行转换。
+
+**示例**（同一组特征：`1girl, solo, brown hair, white shirt, sitting, bench, park`，`nl_enabled=true`，只展示 `tags` 与 `natural_language`；为节省篇幅假定 `tag_range` 为 `[8,14]`，补出的 tag 须按 4 节记入 `added`，实际仍按输入的 `tag_range`，默认 `[15,40]`）：
+
+`tag_nl`（默认）：`natural_language` 补视角与姿势细节。
+
+```json
+{"tags":["1girl","solo","brown hair","white shirt","sitting","looking down","bench","park","day","full body"],"natural_language":"She sits at the left end of the bench with her right leg crossed over her left, looking down at her hands. The view is from the front at eye level."}
+```
+
+`nl`：`natural_language` 独立完整，覆盖全部 tags 的核心内容。
+
+```json
+{"tags":["1girl","solo","brown hair","white shirt","sitting","looking down","bench","park","day","full body"],"natural_language":"A girl with brown hair and a white shirt sits on a park bench in daylight, looking down at her hands. The whole figure is visible from the front at eye level."}
+```
+
+`tag`（`nl_enabled=false`）：`"natural_language": null`，其余字段照旧。
 
 ## 4. Conflict handling
 
@@ -425,3 +468,11 @@ What is wrong:
 - Tag order is broken (quality/style words first) and the tag count is below the `tag_range` minimum.
 
 A correct output keeps one pose and one scene tag, lists the other two in `dropped` with reasons, and may list any filling tags in `added`.
+
+## 8. 参考文件
+
+运行时只注入本 SKILL.md，`references/` 下的文件不会自动加载，仅供开发者和后续扩展查阅。
+
+| 何时读取 | 文件 |
+|------|------|
+| 产品新增 Anima 提交目标，或需要 Anima 的文本形态、画师触发词、多人串漏、角色拆分、风景优先等写法细节 | `references/anima-writing.md` |

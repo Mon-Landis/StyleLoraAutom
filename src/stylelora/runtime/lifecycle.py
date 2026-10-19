@@ -107,6 +107,8 @@ class Runtime:
     async def start_task_monitor(self):
         from .prompt_completion import completion_service
         completion_service(self)
+        from .prompt_generation import generation_service
+        generation_service(self)
         if not hasattr(self, 'prompts'):
             from stylelora.prompts.task_store import TaskStore
             if any(TaskStore(self.product.root.parent).root.glob('*.json')):
@@ -216,6 +218,8 @@ class Runtime:
             handle = await self.blocking(lambda: projects.create_project(path, **create) if create is not None else projects.open_project(path))
             self.generation += 1
             ctx = self.current = ProjectContext(str(uuid4()), self.generation, handle)
+            from .prompt_completion import completion_service
+            completion_service(self).reconcile_all()
             scope = hashlib.sha256(str(handle.root).encode()).hexdigest()
             self.supervisor.project_scopes[ctx.project_id] = scope
             for record in self.supervisor.records.values():

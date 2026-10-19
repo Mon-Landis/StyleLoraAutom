@@ -62,6 +62,24 @@
 - `POST /tasks/{task_id}/cancel` 沿用 body `{request_key:string}`；退出/关项目暂停，不自动重放未知模型调用。
 - 模型只填空字段；人工编辑后 completion:stale；未补齐 completion:incomplete；缺 skill/LLM 时 completion:unavailable。
 - 重试创建新任务和新 Idempotency-Key；已有成功字段保留，旧任务不会自动恢复调用。
+
+## 主题生成（prompt_generation）
+
+- `POST /tasks` body `{type:"prompt_generation",ref:Ref,brief:string,count:int}` → 202 统一 TaskView；必须带 `Idempotency-Key`（缺失 422 `schema:invalid`）；body 只允许 `type/ref/brief/count` 且四键必填，多余或缺少键 422 `input:invalid`（`runtime/contracts.py` `fields`）。
+- 校验：`count` 为 int 且 1..200；`brief` 非空（去空白后）且 ≤4000 字符；Idempotency-Key 长度 1..256；不合规为 422 `schema:invalid`。前端 `GenerateDialog` 同限，brief 提交前 trim。
+- 幂等：同 key 且 (ref, brief, count) 摘要一致返回原任务；摘要不同 409 `dictionary:request_key_conflict`。
+- 无 LLM 时 503 `completion:unavailable`；`ref` 指向的组不存在或项目未打开按组库既有错误映射返回（`api/errors.py`：`*not_found` → 404，`project:closed` → 409）[具体错误码未逐一核对]。HTTP 映射：`dictionary:request_key_conflict` → 409，`dictionary:revision_conflict` → 412。
+- 拆批：每批 ≤20 条（count=45 → 20/20/5），各批同时发起（`asyncio.gather`），实际并发另受端点/令牌限流约束；单次请求 `transport_retry_limit=0`、`repair_limit=0`。
+- 角色：目标组 nsfw 走 `prompt_nsfw`，否则 `prompt`；请求带 `content_safety` 声明。
+- 写回：每批以 `{task_id内部记录id}:batch:{序号}` 为键对目标组做 CAS 追加（`generation-append`）；遇 `dictionary:revision_conflict` 重新读取后最多尝试 8 次，用尽返回该错误码并记为该批失败。键已存在则直接返回已存回执；回执摘要不一致报 `dictionary:request_key_conflict`。
+- 条目校验：无效条目丢弃并记 issue `entry:invalid`；有效数 < 请求数记 `count_short`；新条目不带 id/index，disable 恒 false。
+- 批次回执 `reports[]`：`{batch,requested,generated,failed,status:"done"|"partial"|"failed",issues[],error_code,result_digest}`；失败批 `error_code` 为错误码（未知结果为 `llm:outcome_unknown`，其余默认 `generation:failed`）。回执随目标组快照持久化。
+- `GET /tasks/{task_id}` → TaskView + `{type:"prompt_generation",reports:[…]}`；任务快照另含 `requested/generated/failed/batches/issues`，`progress` 为 generated/requested（`failed` 单列）。未返回回执的批次以 `{generated:0,failed:0,status:<任务状态>}` 占位。
+- 状态：任务全部批次无 `error_code` 为 `done`，任一批有则 `failed`；用户取消 → `canceled`，退出/关项目 → `paused`（可重试）；取消/暂停后，尚未返回的批次结果不再写回组。取消沿用 `POST /tasks/{task_id}/cancel` body `{request_key}`。
+- 重启：启动加载时 `pending/running` 转 `paused`，`reason_code` 为 `generation:interrupted`，不自动重放模型调用。
+- reconcile：启动加载与每次读取任务快照时，对非 `pending/running` 任务，把已写入组回执但未记入任务 reports 的批次补回；不重发模型调用，不重复追加。项目组须项目已打开，未打开时跳过，之后再试。
+- 前端：「生成」按钮仅在选中组时出现，空组也可生成（`PromptsPage.generateBlockedReason`）；提交后保存 task_id，用 `Promise.allSettled` 轮询任务详情，失败显示中文原因（`lib/promptErrors.ts`）。
+- 模型生成的新条目是否带「生成标记」：[待确认]（docs/09 §7 有规格，本次未核对对应代码）。
 - `GET /settings` → 产品设置 + revision/version/revealed_this_run；默认 nsfw_enabled=false、nsfw_display_mode="click_reveal"。
 - `PATCH /settings` body `{nsfw_enabled?:bool,nsfw_display_mode?:"click_reveal"|"hover"|"show"}`，设置 ETag CAS（冲突 412 settings:revision_conflict）。
 - image_display 兼容映射同一值；两个键同时提交不同值返回 422；磁盘只保存 nsfw_display_mode。

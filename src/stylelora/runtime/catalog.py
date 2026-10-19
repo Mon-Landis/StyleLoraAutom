@@ -39,12 +39,15 @@ class Catalog:
         return found
 
     def save_endpoint(self, value, identity=None, expected=None):
-        fields(value, {'base_url', 'protocol', 'models', 'token_refs', 'supports_json_schema'}, {'base_url', 'protocol', 'models'})
+        fields(value, {'base_url', 'protocol', 'models', 'token_refs', 'supports_json_schema', 'max_parallel'}, {'base_url', 'protocol', 'models'})
         if value['protocol'] not in ('openai_chat', 'openai_responses', 'anthropic_messages'):
             raise Failure(422, 'input:invalid')
         old = self.endpoint(identity) if identity else None
         if old:
             check(expected, self.endpoint_view(old)['version'])
+        max_parallel = value.get('max_parallel', old.max_parallel if old else 4)
+        if type(max_parallel) is not int or (max_parallel != -1 and max_parallel < 1):
+            raise Failure(422, 'input:invalid')
         models = []
         if not isinstance(value['models'], list):
             raise Failure(422, 'input:invalid')
@@ -52,7 +55,12 @@ class Catalog:
             fields(model, {'name', 'supports_images', 'wire_name', 'response_aliases'}, {'name'})
             if type(model.get('supports_images', False)) is not bool:
                 raise Failure(422, 'input:invalid')
-            models.append(ModelConfig(**model))
+            config = ModelConfig(**model)
+            # 保留未改动模型的能力检测元数据（仅在图像能力声明一致时沿用）
+            previous = next((m for m in old.models if m.name == config.name), None) if old else None
+            if previous is not None and previous.supports_images == config.supports_images:
+                config = replace(config, capability_source=previous.capability_source, tested_at=previous.tested_at)
+            models.append(config)
         if 'supports_json_schema' in value and type(value['supports_json_schema']) is not bool:
             raise Failure(422, 'input:invalid')
         refs = []
@@ -62,7 +70,8 @@ class Catalog:
             except (ValueError, TypeError):
                 raise Failure(422, 'input:invalid') from None
         result = self.store.llm.save_endpoint(EndpointConfig(identity or str(uuid4()), value['base_url'], value['protocol'],
-            tuple(refs), tuple(models), supports_json_schema=value.get('supports_json_schema', False)), expected_revision=old.revision if old else 0)
+            tuple(refs), tuple(models), supports_json_schema=value.get('supports_json_schema', False),
+            max_parallel=max_parallel), expected_revision=old.revision if old else 0)
         return self.endpoint_view(result)
 
     def secret(self, identity, value, expected, token_ref=None):

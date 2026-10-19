@@ -79,6 +79,12 @@
   --size-pg-left: 264px;
   --size-pg-right: 200px;
   --size-pg-thumb: 88px;
+  --size-import-thumb: 64px;
+  --size-import-list-height: 320px;
+  --import-nl-lines: 2;
+  --size-pg-vkeys: 132px;
+  --size-pg-vkeys-height: 160px;
+  --size-pg-vtext-min: 96px;
   --size-ctxmenu-width: 200px;
   --blur-nsfw: 14px;
   --opacity-disabled: 0.5;

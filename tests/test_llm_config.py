@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 import os
 from pathlib import Path
 import tempfile
@@ -37,6 +38,30 @@ class ConfigTests(unittest.TestCase):
             self.assertIsNone(self.config.bind_role(role, None, expected_revision=1))
         with self.assertRaises(LlmFailure):
             self.config.resolve_role('other')
+
+    def test_max_parallel_roundtrip_and_legacy_default(self):
+        saved = self.config.save_endpoint(replace(self.endpoint, max_parallel=-1), expected_revision=0)
+        self.assertEqual(self.config.endpoint('local').max_parallel, -1)
+        saved = self.config.save_endpoint(replace(saved, max_parallel=7), expected_revision=saved.revision)
+        self.assertEqual(self.config.endpoint('local').max_parallel, 7)
+        raw = json.loads(self.config.path.read_text(encoding='utf-8'))
+        del raw['endpoints'][0]['max_parallel']
+        self.config.path.write_text(json.dumps(raw), encoding='utf-8')
+        self.assertEqual(self.config.endpoint('local').max_parallel, 4)
+
+    def test_invalid_max_parallel_rejected_on_save_and_load(self):
+        for value in (0, -2, True, False, 1.5, '4', None):
+            with self.subTest(value=value):
+                with self.assertRaises(LlmFailure) as caught:
+                    self.config.save_endpoint(replace(self.endpoint, max_parallel=value), expected_revision=0)
+                self.assertEqual(caught.exception.code, 'llm:config_invalid')
+        self.config.save_endpoint(self.endpoint, expected_revision=0)
+        raw = json.loads(self.config.path.read_text(encoding='utf-8'))
+        raw['endpoints'][0]['max_parallel'] = 0
+        self.config.path.write_text(json.dumps(raw), encoding='utf-8')
+        with self.assertRaises(LlmFailure) as caught:
+            self.config.load_endpoints()
+        self.assertEqual(caught.exception.code, 'llm:config_invalid')
 
     def test_reject_url_credentials(self):
         from dataclasses import replace

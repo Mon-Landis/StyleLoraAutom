@@ -84,3 +84,35 @@ class ComputeTests(unittest.IsolatedAsyncioTestCase):
         for value in (-.1, 1, float('nan')):
             with self.assertRaises(LlmFailure):
                 ComputePolicy(reserve_ratio=value)
+
+    def test_legacy_resources_migrate_defaults_keep_explicit(self):
+        import json
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)/'resources.json'
+            base = ProductStore(Path(temporary))
+            try:
+                network = base.get_resources()['network'] | {'global_limit': 2, 'endpoint_default': 2, 'token_default': 3}
+                compute = base.get_resources()['compute']
+            finally:
+                base.close()
+            path.write_text(json.dumps(dict(revision='5', network=network, compute=compute)), encoding='utf-8')
+            store = ProductStore(Path(temporary))
+            try:
+                migrated = store.get_resources()
+            finally:
+                store.close()
+            self.assertEqual(migrated['revision'], '5')
+            self.assertEqual(migrated['network']['global_limit'], -1)
+            self.assertEqual(migrated['network']['endpoint_default'], 4)
+            self.assertEqual(migrated['network']['token_default'], 3)
+            self.assertNotIn('_policy_version', migrated)
+            stored = json.loads(path.read_text(encoding='utf-8'))
+            self.assertEqual(stored['_policy_version'], 2)
+            # 迁移后用户再设回 2 不应被再次迁移
+            store = ProductStore(Path(temporary))
+            try:
+                value = dict(expected_revision='5', network=migrated['network'] | {'global_limit': 2}, compute=migrated['compute'])
+                store.update_resources(value)
+                self.assertEqual(store.get_resources()['network']['global_limit'], 2)
+            finally:
+                store.close()

@@ -1,19 +1,79 @@
 """F27 application service; GroupRef never accepts a filesystem path."""
 from dataclasses import replace
 from uuid import uuid4
-from stylelora.prompts.groups import Group, GroupRef, validate_entry, content, freeze_groups
+from stylelora.prompts.groups import (Group, GroupRef, GeneratedFields, FieldVersions,
+                                      BASE_FIELDS, _check, _variant_key,
+                                      validate_entry, content, freeze_groups)
 from stylelora.prompts.group_store import GroupStore, prepare_preview
 from stylelora.prompts.group_exchange import GroupExchange
 from stylelora.prompts.dictionaries import digest
 from stylelora.prompts.types import plain
 from stylelora.prompts.validation import require, identifier
+from stylelora.prompts.prompt_normalize import normalize_prompt
 from .contracts import Failure
+
+
+def normalize_fields(patch):
+    require(isinstance(patch, dict))
+    values = dict(patch)
+    source = values.pop('source_format', 'nai')
+    require(source in ('nai', 'anima'))
+    require(not set(values) - {'nl', 'variants', 'disable', 'aspect'})
+    if 'nl' in values:
+        values['nl'] = normalize_prompt(values['nl'], source).text
+    if 'variants' in values:
+        _check(isinstance(values['variants'], dict), 'variants')
+        variants = {}
+        for key, value in values['variants'].items():
+            _check(value is None or isinstance(value, str), f'variants[{key!r}]')
+            variants[key] = normalize_prompt(value, source).text if value is not None and value.strip() else value
+        values['variants'] = variants
+    return values
+
+
+def apply_user_patch(entry, patch):
+    patch = normalize_fields(patch)
+    require(isinstance(patch, dict) and not set(patch)-set(content(entry)))
+    values = content(entry) | patch
+    touched = set(patch) & BASE_FIELDS
+    variants = dict(entry.variants)
+    marks = dict(entry.generated.variants)
+    versions = dict(entry.edit_versions.variants)
+    if 'variants' in patch:
+        raw = patch['variants']
+        _check(isinstance(raw, dict), 'variants')
+        seen = set()
+        for key, value in raw.items():
+            path = f'variants[{key!r}]'
+            key = _variant_key(key, path)
+            _check(key not in seen, path)
+            seen.add(key)
+            _check(value is None or isinstance(value, str), path)
+            versions[key] = versions.get(key, 0) + 1
+            if value is None:
+                variants.pop(key, None)
+                marks.pop(key, None)
+            else:
+                variants[key] = value
+                marks[key] = False
+        values['variants'] = variants
+    updated = validate_entry(values | {'entry_id': entry.entry_id})
+    generated = {k: getattr(entry.generated, k) for k in BASE_FIELDS}
+    edits = {k: getattr(entry.edit_versions, k) for k in BASE_FIELDS}
+    for field in touched:
+        generated[field] = False
+        edits[field] += 1
+    return replace(updated, preview=entry.preview, pending=entry.pending,
+                   completion=updated.completion if touched else entry.completion,
+                   generated=GeneratedFields(**generated, variants=marks),
+                   edit_versions=FieldVersions(**edits, variants=versions))
 
 
 class PromptGroups:
     def __init__(self, rt):
         self.rt = rt
-        self.store = GroupStore(rt.product.root, self.project)
+        self.store = GroupStore(rt.product.root, self.project,
+                                auto_complete_default=lambda: rt.product.get()['prompt_auto_complete_default'])
         self.exchange = GroupExchange(self.store, rt.clock)
         self.pages = {}
         self.revealed_this_run = False
@@ -28,7 +88,7 @@ class PromptGroups:
         return GroupRef(scope, params.get('project_token'), identity)
 
     def summary(self, group):
-        result = {key: getattr(group, key) for key in ('dictionary_id', 'name', 'kind', 'category', 'schema_version', 'scope', 'nsfw', 'revision')}
+        result = {key: getattr(group, key) for key in ('dictionary_id', 'name', 'kind', 'category', 'schema_version', 'scope', 'nsfw', 'revision', 'auto_complete')}
         result.update(entry_count=len(group.entries), version=str(group.revision),
                       project_token=self.project()[0] if group.scope == 'project' and self.project() else None)
         return result
@@ -75,17 +135,19 @@ class PromptGroups:
         return result
 
     def create(self, value, key):
-        require(isinstance(value, dict) and not set(value)-{'dictionary_id', 'name', 'kind', 'category', 'nsfw', 'scope', 'project_token'})
+        require(isinstance(value, dict) and not set(value)-{'dictionary_id', 'name', 'kind', 'category', 'nsfw', 'scope', 'project_token', 'auto_complete'})
         current = self.project()
         scope = value.get('scope', 'project' if current else 'global')
         # A deterministic identity makes retries across process restarts address the receipt.
         from uuid import uuid5, NAMESPACE_URL
         identity = value.get('dictionary_id', str(uuid5(NAMESPACE_URL, 'stylelora:f27:'+key)))
         ref = GroupRef(scope, value.get('project_token', current[0] if current and scope == 'project' else None), identity)
-        group = Group(identity, value.get('name', ''), scope, value.get('nsfw', False),
-                      kind=value.get('kind', 'prompts'), category=value.get('category', 'full_content'))
         def change(old):
             require(old is None, 'group:id_conflict')
+            default = value['auto_complete'] if 'auto_complete' in value else self.store.auto_complete_default()
+            group = Group(identity, value.get('name', ''), scope, value.get('nsfw', False),
+                          kind=value.get('kind', 'prompts'), category=value.get('category', 'full_content'),
+                          auto_complete=default)
             return group, self.summary(group)
         return self.store.mutate(ref, 0, key, 'create', value, change)
 
@@ -99,13 +161,13 @@ class PromptGroups:
         def change(group):
             require(group is not None, 'dictionary:not_found')
             if entry_id is None and action == 'patch':
-                require(isinstance(patch, dict) and not set(patch)-{'name', 'nsfw'})
+                require(isinstance(patch, dict) and not set(patch)-{'name', 'nsfw', 'auto_complete'})
                 updated = replace(group, **patch, revision=revision+1)
                 return updated, self.summary(updated)
             entries = list(group.entries)
             if action == 'add':
                 require('entry_id' not in patch)
-                entry = validate_entry(patch, allow_id=False)
+                entry = validate_entry(normalize_fields(patch), allow_id=False)
                 entries.append(entry)
             else:
                 entry = self.entry(group, entry_id)
@@ -117,9 +179,7 @@ class PromptGroups:
                     entry = replace(entry, preview=self.store.publish(asset, ref, entry_id))
                     entries[index] = entry
                 else:
-                    require(isinstance(patch, dict) and not set(patch)-set(content(entry)))
-                    updated = validate_entry(content(entry) | patch | {'entry_id': entry_id})
-                    entry = replace(updated, preview=entry.preview)
+                    entry = apply_user_patch(entry, patch)
                     entries[index] = entry
             result = {'deleted': entry_id} if action == 'delete' else plain(entry)
             return replace(group, entries=tuple(entries)), result | {'nsfw': group.nsfw}

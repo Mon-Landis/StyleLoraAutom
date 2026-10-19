@@ -53,3 +53,8 @@ textarea { padding: var(--space-3); }
 .deco--pixel { width: var(--deco-pixel-size); height: var(--deco-pixel-size); background: var(--color-deco-pixel-4); box-shadow: calc(var(--deco-pixel-size) + var(--deco-pixel-gap)) 0 var(--color-deco-pixel-3), 0 calc(var(--deco-pixel-size) + var(--deco-pixel-gap)) var(--color-deco-pixel-5); }
 .deco--halftone { width: var(--space-8); height: var(--space-6); background-image: radial-gradient(var(--color-deco-halftone) var(--deco-halftone-dot), transparent calc(var(--deco-halftone-dot) + 0.5px)); background-size: var(--deco-halftone-pitch) var(--deco-halftone-pitch); }
 .deco--index { font-family: var(--font-mono); font-size: var(--font-size-2xs); letter-spacing: 0.2em; }
+
+/* 全局通知（NoticeHost）：位置/层级/尺寸全部走令牌。 */
+.notice-host { position: fixed; right: var(--space-5); bottom: calc(var(--size-statusbar-height) + var(--space-5)); z-index: var(--z-toast); display: flex; flex-direction: column; gap: var(--space-3); width: var(--size-popover-width); max-width: calc(100vw - 2 * var(--space-5)); }
+.notice .banner { display: flex; align-items: flex-start; gap: var(--space-3); margin-bottom: 0; background-color: var(--color-surface-raised); box-shadow: var(--shadow-popover); }
+.notice__text { flex: 1; min-width: 0; overflow-wrap: anywhere; }

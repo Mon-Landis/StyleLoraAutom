@@ -2,6 +2,7 @@
 import csv
 import io
 import json
+import re
 import warnings
 from dataclasses import replace
 from uuid import uuid4
@@ -10,6 +11,23 @@ from stylelora.tagging.tokenizer import tokenize_prompt
 from .types import *
 from .validation import require, strict_loads, construct, validate_content, normalize_tag
 from .dictionaries import _encode, _decode, load_dictionary, append_entries, digest, LOCK, _path, _write
+
+
+def _escape_nl(text):
+    """Stored NL keeps real newlines; line-oriented TXT carries them as a literal backslash-n."""
+    return text.replace('\r\n','\n').replace('\r','\n').replace('\n','\\n')
+
+
+# The tokenizer treats backslash as an escape, so swap the escape for a plain-word sentinel before tokenizing.
+_NL_SENTINEL='zzstyleloranlbreakzz'
+
+
+def _mask_nl(text):
+    return text.replace('\\n',' '+_NL_SENTINEL+' ')
+
+
+def _unescape_nl(text):
+    return re.sub(r' ?'+_NL_SENTINEL+r' ?','\n',text)
 
 
 def preview_digest(preview):
@@ -53,10 +71,10 @@ def preview_import(data, *, format, kind, dimension=None, base_revision=1, catal
                     row={'dimension':dimension,'tag':parts[0],'rating':parts[1] or None if len(parts)==2 else None}
                 else:
                     tags=[]; nl=[]
-                    for token in tokenize_prompt(row,catalog=catalog):
+                    for token in tokenize_prompt(_mask_nl(row),catalog=catalog):
                         require(token.syntax=='plain','import:syntax_requires_edit')
                         if token.lookup in ('known','alias'): tags.append(normalize_tag(token.raw,catalog))
-                        elif token.raw.strip(): nl.append(token.raw.strip())
+                        elif token.raw.strip(): nl.append(_unescape_nl(token.raw.strip()))
                     row={'tags':tags,'natural_language':', '.join(nl) or None}
             elif format=='csv':
                 require(None not in row and all(v is not None for v in row.values()))
@@ -125,7 +143,8 @@ def export_value(value, format, *, dimension=None):
                 w.writerow({'tags':json.dumps(list(e.tags),ensure_ascii=False),'natural_language':e.natural_language or '', 'aspect':e.aspect or '', 'rating':e.rating or ''})
         else:
             warnings.warn('TXT loses aspect/rating and may reclassify comma fragments; use JSON or CSV for lossless exchange.',UserWarning,stacklevel=2)
-            out.write('\n'.join(', '.join(e.tags)+(', '+e.natural_language if e.natural_language else '') for e in value.entries))
+            # U26: TXT is one entry per line, so NL paragraph breaks are escaped as a literal "\n".
+            out.write('\n'.join(', '.join(e.tags)+(', '+_escape_nl(e.natural_language) if e.natural_language else '') for e in value.entries))
     else:
         if format=='csv':
             w=csv.DictWriter(out,fieldnames=['dimension','tag','rating']); w.writeheader()

@@ -11,6 +11,8 @@ import { Icon } from './slots';
 export interface PreviewImageProps {
   /** 带鉴权的图像 API 路径；null 显示占位。数据集图与提示词组预览共用本组件。 */
   path: string | null | undefined;
+  /** 调用方已持有的 blob/object URL（如导入预览）；提供时不再按 path 取图，URL 生命周期归调用方。 */
+  url?: string | null;
   /** 敏感图谓词 S（组 nsfw=true，或 rating ∈ {questionable, explicit}）。 */
   sensitive: boolean;
   alt: string;
@@ -33,7 +35,9 @@ export function PreviewImage(p: PreviewImageProps) {
   const version = useSafety((s) => s.policyVersion);
   const [hover, setHover] = useState(false);
   const [within, setWithin] = useState(false);
-  const { url, error } = useBlobUrl(p.path);
+  const fetched = useBlobUrl(p.url !== undefined ? null : p.path);
+  const url = p.url !== undefined ? p.url : fetched.url;
+  const error = p.url !== undefined ? false : fetched.error;
   const focused = hover || within || !!p.forceFocused;
   const d = imagePolicy(p.sensitive, focused, settings, revealed);
   const label = p.sensitive

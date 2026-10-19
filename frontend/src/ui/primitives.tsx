@@ -1,7 +1,7 @@
-import type { ButtonHTMLAttributes, ReactNode } from 'react';
+import type { ButtonHTMLAttributes, ReactNode, Ref } from 'react';
 
 /** 视觉包装层：业务组件只用这些，换皮肤时整体替换本文件 + ui.css。 */
-type BtnProps = ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'default' | 'primary' | 'danger' | 'ghost' };
+type BtnProps = ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'default' | 'primary' | 'danger' | 'ghost'; ref?: Ref<HTMLButtonElement> };
 
 export function Button({ variant = 'default', className, type = 'button', ...rest }: BtnProps) {
   return <button type={type} className={`btn btn--${variant}${className ? ' ' + className : ''}`} {...rest} />;

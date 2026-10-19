@@ -13,11 +13,20 @@ async def create_task(request: Request):
     from stylelora.prompts.groups import GroupRef
     from stylelora.prompts.validation import require
     rt = runtime(request)
-    value = fields(await request.json(), {'type', 'ref', 'entry_ids', 'base_revision'}, {'type', 'ref', 'base_revision'})
-    require(value['type'] == 'prompt_completion')
+    value = await request.json()
+    require(isinstance(value, dict))
     key = request.headers.get('idempotency-key')
     require(isinstance(key, str) and bool(key))
-    result = await completion_service(rt).enqueue(GroupRef.parse(value['ref']), value.get('entry_ids'), value['base_revision'], key)
+    if value.get('type') == 'prompt_generation':
+        from stylelora.runtime.prompt_generation import generation_service
+        value = fields(value, {'type', 'ref', 'brief', 'count'}, {'type', 'ref', 'brief', 'count'})
+        result = await generation_service(rt).enqueue(GroupRef.parse(value['ref']), value['brief'], value['count'], key)
+    else:
+        value = fields(value, {'type', 'ref', 'entry_ids', 'base_revision', 'trigger'}, {'type', 'ref', 'base_revision'})
+        require(value['type'] == 'prompt_completion')
+        require(value.get('trigger', 'manual') != 'auto_leave' or 'entry_ids' not in value)
+        result = await completion_service(rt).enqueue(GroupRef.parse(value['ref']), value.get('entry_ids'), value['base_revision'], key,
+                                                     trigger=value.get('trigger', 'manual'))
     return JSONResponse(result, status_code=202)
 
 
@@ -39,8 +48,8 @@ async def detail(task_id: str, request: Request):
     await rt.refresh_tasks()
     result = plain(await rt.tasks.get(task_id))
     adapter, linked, _ = rt.tasks._record(task_id)
-    if linked.kind == 'prompt_completion':
-        result['type'] = 'prompt_completion'
+    if linked.kind in ('prompt_completion', 'prompt_generation'):
+        result['type'] = linked.kind
         result['reports'] = adapter.records[linked.id]['reports']
     return result
 

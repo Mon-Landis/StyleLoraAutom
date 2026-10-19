@@ -6,6 +6,10 @@ from pathlib import Path
 from stylelora.llm.config import atomic_json, read_json, ConfigStore
 from .contracts import fields, check, Failure
 
+# resources.json 网络策略版本；v1 的默认值为 global 2 / endpoint 2 / token 1（U27 前）
+RESOURCE_POLICY_VERSION = 2
+LEGACY_NETWORK_DEFAULTS = {'global_limit': 2, 'endpoint_default': 2, 'token_default': 1}
+
 
 class ProductStore:
     def __init__(self, root):
@@ -15,7 +19,8 @@ class ProductStore:
         self.defaults = dict(revision=0, cost_policy='ask', storage_thresholds={'project_bytes': 5_000_000_000},
                              llm_limits={'concurrency': 2, 'timeout_s': 120}, wd_enabled=False,
                              mcp={'discovery_mode': 'default'}, capabilities={},
-                             nsfw_enabled=False, nsfw_display_mode='click_reveal')
+                             nsfw_enabled=False, nsfw_display_mode='click_reveal',
+                             prompt_auto_complete_default=True)
 
     async def call(self, work):
         return await asyncio.wrap_future(self.queue.submit(work))
@@ -55,7 +60,9 @@ class ProductStore:
     def update_safety(self, patch, expected, request_key):
         from stylelora.prompts.dictionaries import LOCK, digest
         with LOCK:
-            fields(patch, {'nsfw_enabled', 'nsfw_display_mode', 'image_display'})
+            fields(patch, {'nsfw_enabled', 'nsfw_display_mode', 'image_display', 'prompt_auto_complete_default'})
+            if 'prompt_auto_complete_default' in patch and type(patch['prompt_auto_complete_default']) is not bool:
+                raise Failure(422, 'schema:invalid')
             if 'image_display' in patch:
                 if 'nsfw_display_mode' in patch and patch['image_display'] != patch['nsfw_display_mode']:
                     raise Failure(422, 'schema:invalid')
@@ -81,7 +88,21 @@ class ProductStore:
         from stylelora.resources.network import NetworkPolicy
         from stylelora.resources.compute import ComputePolicy
         from .contracts import plain
-        return read_json(self.root/'resources.json', dict(revision='0', network=plain(NetworkPolicy()), compute=plain(ComputePolicy())))
+        path = self.root/'resources.json'
+        if not path.exists():
+            return dict(revision='0', network=plain(NetworkPolicy()), compute=plain(ComputePolicy()))
+        data = read_json(path, {})
+        if data.get('_policy_version', 1) < RESOURCE_POLICY_VERSION:
+            # v1 -> v2：仅把仍等于旧默认值的字段迁到新默认（-1 不限 / 端点 4），用户显式改过的值保留
+            network = dict(data.get('network') or {})
+            fresh = plain(NetworkPolicy())
+            for key, old in LEGACY_NETWORK_DEFAULTS.items():
+                if network.get(key) == old:
+                    network[key] = fresh[key]
+            data['network'] = network
+            data['_policy_version'] = RESOURCE_POLICY_VERSION
+            atomic_json(path, data)
+        return {k: v for k, v in data.items() if k != '_policy_version'}
 
     def update_resources(self, value):
         from stylelora.resources.network import NetworkPolicy
@@ -96,5 +117,5 @@ class ProductStore:
         if value['expected_revision'] != current['revision']:
             raise Failure(409, 'resource:revision_conflict')
         result = dict(revision=str(int(current['revision'])+1), network=plain(network), compute=plain(compute))
-        atomic_json(self.root/'resources.json', result)
+        atomic_json(self.root/'resources.json', result | {'_policy_version': RESOURCE_POLICY_VERSION})
         return result

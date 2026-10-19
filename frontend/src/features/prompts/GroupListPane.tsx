@@ -24,6 +24,7 @@ export function GroupListPane(p: {
   onNsfwOnly: (v: boolean) => void;
   onSelect: (g: GroupSummary) => void;
   onCreate: () => void;
+  onImport: () => void;
   bindMenu: BindMenu;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
@@ -54,7 +55,7 @@ export function GroupListPane(p: {
       <div ref={listRef} className="pg-left__list" role="listbox" aria-label="已有词典">
         {p.loading && <Loading />}
         {p.errorText && <div className="pg-muted" role="alert">{p.errorText}</div>}
-        {!p.loading && !p.errorText && p.groups.length === 0 && <Empty title="没有词典" hint="点击下方「新建词典」或批量导入。" />}
+        {!p.loading && !p.errorText && p.groups.length === 0 && <Empty title="没有词典" hint="点击下方「新建词典」或「导入词典」。" />}
         {p.groups.map((g) => {
           const active = sameRef(refOf(g, p.projectId), p.selected);
           return (
@@ -84,6 +85,7 @@ export function GroupListPane(p: {
       </div>
       <div className="pg-left__foot">
         <Button variant="primary" onClick={p.onCreate}>新建词典</Button>
+        <Button onClick={p.onImport}>导入词典</Button>
       </div>
     </aside>
   );

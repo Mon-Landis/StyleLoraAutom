@@ -19,6 +19,9 @@ class WarningCode(str, Enum):
     W_DANGLING_ESCAPE = 'W_DANGLING_ESCAPE'
     W_DEPTH_LIMIT = 'W_DEPTH_LIMIT'
     W_INPUT_LIMIT = 'W_INPUT_LIMIT'
+    W_WEIGHT_CLAMPED = 'W_WEIGHT_CLAMPED'
+    W_NORMALIZATION_ROUNDED = 'normalization:rounded'
+    W_NUMERIC_LIMIT = 'W_NUMERIC_LIMIT'
 
 
 class LexKind(str, Enum):
@@ -45,7 +48,8 @@ class SourceSpan:
 @dataclass(frozen=True)
 class ConversionPolicy:
     bracket_mode: Literal['multiplicative'] = 'multiplicative'
-    ordinary_underscores: Literal['preserve', 'space'] = 'preserve'
+    ordinary_underscores: Literal['preserve', 'space'] = 'space'
+    content_weight_ratio: Decimal = Decimal('0.6')
     max_weight: Decimal = Decimal('3.2')
     decimal_places: int = 2
     max_depth: int = 128
@@ -53,6 +57,10 @@ class ConversionPolicy:
     max_numeric_chars: int = 64
 
     def __post_init__(self):
+        if not isinstance(self.content_weight_ratio, Decimal):
+            raise TypeError('content_weight_ratio must be Decimal')
+        if not self.content_weight_ratio.is_finite() or not 0 < self.content_weight_ratio <= 1:
+            raise ValueError('content_weight_ratio must be in (0, 1]')
         for name in ('bracket_mode', 'ordinary_underscores'):
             if not isinstance(getattr(self, name), str):
                 raise TypeError(name)
@@ -156,11 +164,14 @@ def _sorted(warnings):
 
 _NUMBER = re.compile(r'[+-]?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)\Z')
 _CANDIDATE = re.compile(r'[^\s\\{}\[\],，|:]+::')
+_CANDIDATE_BODY = re.compile(r'[^\s\\{}\[\],，|:]+')
+_STORAGE_CANDIDATE = re.compile(r'[^\s\\{}\[\],，|:_]+::')
+_STORAGE_BODY = re.compile(r'[^\s\\{}\[\],，|:_]+')
 _BRACKETS = {'{': LexKind.OPEN_UP, '}': LexKind.CLOSE_UP,
              '[': LexKind.OPEN_DOWN, ']': LexKind.CLOSE_DOWN}
 
 
-def scan_nai(text: str, *, policy: ConversionPolicy) -> LexResult:
+def scan_nai(text: str, *, policy: ConversionPolicy, storage: bool = False) -> LexResult:
     _policy(policy)
     if not isinstance(text, str):
         raise TypeError('text must be str')
@@ -168,9 +179,11 @@ def scan_nai(text: str, *, policy: ConversionPolicy) -> LexResult:
         return LexResult((), (_warning(WarningCode.W_INPUT_LIMIT,
                                       SourceSpan(policy.max_chars, len(text))),))
     items, warnings = [], []
-    i = 1 if text.startswith('\ufeff') else 0
+    i = 1 if not storage and text.startswith('\ufeff') else 0
     pending = i
     active, eligible = False, True
+    storage_skip = 0
+    storage_depth = 0
 
     def flush(end):
         if pending < end:
@@ -195,13 +208,22 @@ def scan_nai(text: str, *, policy: ConversionPolicy) -> LexResult:
             eligible = True
         elif text.startswith('::', i):
             kind, value, end = LexKind.DCOLON, '::', i + 2
+            if storage:
+                storage_depth = max(0, storage_depth - 1)
             if active:
                 active, eligible = False, True
-            else:
+            elif not storage:
                 warnings.append(_warning(WarningCode.W_UNKNOWN_DCOLON, SourceSpan(i, end)))
                 eligible = False
-        elif not active and eligible and not c.isspace():
-            match = _CANDIDATE.match(text, i)
+        elif ((storage and i >= storage_skip and (c in '+-.0123456789' and
+                            (i == 0 or text[i - 1] not in '+-.0123456789')
+                            or text[i:i + 3].lower() == 'nan'
+                            or text[i:i + 8].lower() == 'infinity'))
+              or (not storage and not active and eligible)) and not c.isspace():
+            match = (_STORAGE_CANDIDATE if storage else _CANDIDATE).match(text, i)
+            if storage and match is None:
+                body = _STORAGE_BODY.match(text, i)
+                storage_skip = body.end() if body else i + 1
             candidate = match[0][:-2] if match else ''
             if candidate and (candidate[0] in '+-.0123456789'
                               or candidate.lower() in ('nan', 'infinity')):
@@ -209,12 +231,26 @@ def scan_nai(text: str, *, policy: ConversionPolicy) -> LexResult:
                 if len(candidate) <= policy.max_numeric_chars and _NUMBER.fullmatch(candidate):
                     kind, value = LexKind.NUM_OPEN, Decimal(candidate)
                     active, eligible = True, True
+                    if storage:
+                        storage_depth += 1
+                elif storage and storage_depth and not _NUMBER.fullmatch(candidate):
+                    # A digit-leading tag before a closing :: is body text,
+                    # e.g. 3::3d::. Leave the delimiter for the next iteration.
+                    storage_skip = end - 2
+                    end = i + 1
                 else:
                     kind, value = LexKind.INVALID_NUM, match[0]
-                    warnings.append(_warning(WarningCode.W_INVALID_NUMBER, SourceSpan(i, end)))
+                    code = WarningCode.W_NUMERIC_LIMIT if storage and len(candidate) > policy.max_numeric_chars else WarningCode.W_INVALID_NUMBER
+                    warnings.append(_warning(code, SourceSpan(i, end)))
                     eligible = False
             else:
                 eligible = False
+        elif storage and storage_depth and i >= storage_skip and c.isalpha():
+            # Do not reinterpret a tag's numeric suffix (year_2025, model2)
+            # as a nested opener. Numeric blocks at word starts still nest.
+            body = _CANDIDATE_BODY.match(text, i)
+            if body:
+                storage_skip = body.end()
         if kind is None:
             if c in _BRACKETS:
                 kind = _BRACKETS[c]
@@ -223,7 +259,10 @@ def scan_nai(text: str, *, policy: ConversionPolicy) -> LexResult:
                 kind, value = LexKind.PIPE, c
                 warnings.append(_warning(WarningCode.W_UNSUPPORTED_ALTERNATION, SourceSpan(i, end)))
                 eligible = False
-            elif not c.isspace():
+            elif c.isspace():
+                # Whitespace is a word boundary: `s 1.5::x::` starts a numeric block too.
+                eligible = not active
+            else:
                 eligible = False
         if kind is not None:
             flush(i)
@@ -235,12 +274,13 @@ def scan_nai(text: str, *, policy: ConversionPolicy) -> LexResult:
     return LexResult(tuple(items), _sorted(warnings))
 
 
-def parse_nai(items: tuple[LexToken, ...], *, policy: ConversionPolicy) -> ParseResult:
+def parse_nai(items: tuple[LexToken, ...], *, policy: ConversionPolicy, storage: bool = False) -> ParseResult:
     _policy(policy)
     result, warnings, stack, buffer = [], [], [], []
     start = end = 0
     balance, numeric = 0, None
     powers = {}
+    numerics = []
 
     def emit():
         if buffer:
@@ -276,11 +316,16 @@ def parse_nai(items: tuple[LexToken, ...], *, policy: ConversionPolicy) -> Parse
                 balance -= 1 if kind == LexKind.CLOSE_UP else -1
             elif kind == LexKind.NUM_OPEN:
                 emit()
-                numeric = (item.value, item.span, len(result))
+                if storage:
+                    numerics.append(numeric)
+                    factor = numeric[0] if numeric else Decimal(1)
+                else:
+                    factor = Decimal(1)
+                numeric = (item.value * factor, item.span, len(result))
             elif kind == LexKind.DCOLON and numeric:
                 emit()
                 empty(numeric[1], numeric[2])
-                numeric = None
+                numeric = numerics.pop() if storage else None
             elif kind == LexKind.SEP:
                 emit()
             elif kind == LexKind.EOF:
@@ -320,15 +365,22 @@ def normalize_nai_tags(tags: tuple[WeightedTag, ...], *, policy: ConversionPolic
 
 def compress_weights(tags: tuple[WeightedTag, ...], *, policy: ConversionPolicy) -> CompressionResult:
     _policy(policy)
-    items = []
+    items, warnings = [], []
     with localcontext(Context(prec=128, rounding=ROUND_HALF_UP)):
         for tag in tags:
             if tag.raw_weight <= 0:
                 continue
-            weight = min(tag.raw_weight, policy.max_weight).quantize(Decimal('.01'))
+            # U25: only the boost part (> 1) is compressed; weights <= 1 map 1:1.
+            if tag.value.startswith('@') or tag.raw_weight <= 1:
+                weight = tag.raw_weight
+            else:
+                weight = 1 + (tag.raw_weight - 1) * policy.content_weight_ratio
+            if weight > policy.max_weight:
+                warnings.append(_warning(WarningCode.W_WEIGHT_CLAMPED, tag.span))
+            weight = min(weight, policy.max_weight).quantize(Decimal('.01'))
             if weight > 0:
                 items.append(ScaledTag(tag.value, tag.raw_weight, weight, tag.span))
-    return CompressionResult(tuple(items), ())
+    return CompressionResult(tuple(items), _sorted(warnings))
 
 
 def render_anima(tags: tuple[ScaledTag, ...]) -> tuple[ConvertedToken, ...]:
@@ -355,4 +407,95 @@ def convert_nai_to_anima(text: str, *, policy: ConversionPolicy | None = None) -
     scaled = compress_weights(normalized.items, policy=policy)
     tokens = render_anima(scaled.items)
     warnings = _sorted(lexed.warnings + parsed.warnings + normalized.warnings + scaled.warnings)
-    return ConversionResult(', '.join(t.rendered for t in tokens), tokens, warnings)
+    return ConversionResult('\n'.join(_lines_by_source(text, tokens)), tokens, warnings)
+
+
+def _line_starts(text):
+    """Offsets where a new source line begins; escaped line breaks do not split lines."""
+    starts, i = [0], 0
+    while i < len(text):
+        c = text[i]
+        if c == '\\':
+            i += 2
+            continue
+        i += 1
+        if c == '\r' and i < len(text) and text[i] == '\n':
+            i += 1
+        if c in '\r\n':
+            starts.append(i)
+    return starts
+
+
+def _lines_by_source(text, tokens, offset=0):
+    """Keep the source line layout: each tag goes to the line where it starts."""
+    starts = [s + offset for s in _line_starts(text)]
+    lines = [[] for _ in starts]
+    row = 0
+    for token in sorted(tokens, key=lambda t: t.span.start):
+        while row + 1 < len(starts) and starts[row + 1] <= token.span.start:
+            row += 1
+        lines[row].append(token.rendered)
+    return [', '.join(items) for items in lines]
+
+
+def _render_storage(text, lexed, tags, weight_for, *, anima=False):
+    """Replace semantic spans, retaining separators and whitespace from the lexer."""
+    output, tokens, warnings = [], [], []
+    dropped_empty = False
+    cursor = 0
+    for tag in tags:
+        while cursor < len(lexed.items) and lexed.items[cursor].span.end <= tag.span.start:
+            item = lexed.items[cursor]
+            if item.kind in (LexKind.TEXT, LexKind.SEP, LexKind.ESCAPED):
+                output.append(str(item.value or item.raw).replace('_', ' '))
+            cursor += 1
+        value = tag.value.replace('_', ' ')
+        leading = value[:len(value) - len(value.lstrip())]
+        trailing = value[len(value.rstrip()):]
+        body = value.strip()
+        if not body:
+            dropped_empty = True
+            while cursor < len(lexed.items) and lexed.items[cursor].span.start < tag.span.end:
+                cursor += 1
+            continue
+        artist = (body.startswith('artist:') and
+                  text[tag.span.start:tag.span.end].lstrip().startswith('artist:')) if not anima else (
+            body.startswith('@') and text[tag.span.start:tag.span.end].lstrip().startswith('@'))
+        if anima and artist:
+            body = 'artist:' + body[1:]
+        weight = weight_for(tag.raw_weight, artist)
+        if weight != tag.raw_weight and not anima:
+            warnings.append(_warning(WarningCode.W_NORMALIZATION_ROUNDED, tag.span))
+        if artist and not body[len('artist:'):].strip():
+            warnings.append(_warning(WarningCode.W_EMPTY_ARTIST, tag.span))
+        rendered = ''.join('\\' + c if c in '\\{}[],:|，\n' else c for c in body)
+        if artist:
+            rendered = rendered.replace('artist\\:', 'artist:', 1)
+        if weight != 1:
+            # A final numeric word would otherwise become an opener before
+            # the closing :: on the next scan (e.g. weighted year_2025).
+            rendered = re.sub(r'(?<!\S)([+-]?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+))$',
+                              r'\\\1', rendered)
+            number = format(weight, 'f')
+            if '.' in number:
+                number = number.rstrip('0').rstrip('.')
+            rendered = f'{number}::{rendered}::'
+        rendered = leading + rendered + trailing
+        output.append(rendered)
+        tokens.append(ConvertedToken(value, tag.raw_weight, weight, tag.span, rendered))
+        while cursor < len(lexed.items) and lexed.items[cursor].span.start < tag.span.end:
+            cursor += 1
+    for item in lexed.items[cursor:]:
+        if item.kind in (LexKind.TEXT, LexKind.SEP, LexKind.ESCAPED):
+            output.append(str(item.value or item.raw).replace('_', ' '))
+    rendered_text = ''.join(output)
+    if dropped_empty:
+        # Use lexer spans so escaped commas inside a tag remain intact.
+        parts, start = [], 0
+        for item in scan_nai(rendered_text, policy=ConversionPolicy(), storage=True).items:
+            if item.kind == LexKind.SEP and item.raw in (',', '，'):
+                parts.append(rendered_text[start:item.span.start].strip())
+                start = item.span.end
+        parts.append(rendered_text[start:].strip())
+        rendered_text = ', '.join(part for part in parts if part)
+    return ConversionResult(rendered_text, tuple(tokens), _sorted(warnings))

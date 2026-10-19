@@ -63,6 +63,34 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('system', audit)
         self.assertNotIn('127.0.0.1', audit)
 
+    async def test_single_token_endpoint_parallel_admission(self):
+        for limit, admitted in ((4, 4), (-1, 8)):
+            with self.subTest(limit=limit):
+                endpoint = self.config.endpoint('local')
+                self.config.save_endpoint(replace(endpoint, token_refs=('PRIMARY',), max_parallel=limit),
+                                          expected_revision=endpoint.revision)
+                entered, release = asyncio.Event(), asyncio.Event()
+                calls = []
+
+                async def transport(*args):
+                    calls.append(args)
+                    if len(calls) == admitted:
+                        entered.set()
+                    await release.wait()
+                    return response()
+
+                service, req = await self.make(transport)
+                tasks = [asyncio.create_task(service.complete(replace(req, request_id=str(i)))) for i in range(8)]
+                try:
+                    await asyncio.wait_for(entered.wait(), 2)
+                    await asyncio.sleep(.03)
+                    self.assertEqual(len(calls), admitted)
+                finally:
+                    release.set()
+                    await asyncio.gather(*tasks)
+                self.assertEqual(len(calls), 8)
+                self.assertEqual(service.network.active, 0)
+
     async def test_429_rotates_without_compression(self):
         async def transport(*args):
             self.calls.append(args)
@@ -193,7 +221,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
                 return response()
             finally:
                 active -= 1
-        service, req = await self.make(transport)
+        service, req = await self.make(transport, concurrency=2)
         first = asyncio.create_task(service.complete(req))
         await started.wait()
         with self.assertRaises(LlmFailure) as caught:

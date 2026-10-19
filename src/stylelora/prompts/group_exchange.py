@@ -10,11 +10,18 @@ from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
 from .groups import Group, GroupRef, content, validate_entry
+from .group_legacy import merge_legacy_content, legacy_content_issues
+from .prompt_normalize import normalize_prompt
 from .group_store import (JSON_LIMIT, ZIP_LIMIT, EXPANDED_LIMIT, IMAGE_LIMIT,
                           ENTRY_LIMIT, prepare_preview)
 from .dictionaries import LOCK, digest
 from .types import PromptError, Issue, plain
 from .validation import require, strict_loads, identifier
+from .group_txt import encode_group_txt, decode_group_txt
+from .group_image_pack import read_image_pack, validate_image_pack, write_image_pack
+
+PREVIEW_CACHE_COUNT = 32
+PREVIEW_CACHE_BYTES = 128 * 1024**2
 
 
 def parse_json(data):
@@ -96,22 +103,25 @@ def read_package(source):
 
 
 def convert_entry(raw):
-    try:
-        from .nai_convert import convert_nai_to_anima
-    except ImportError:
-        raise PromptError('import:unsupported') from None
+    return normalize_entry(raw, 'nai')
+
+
+def normalize_entry(raw, source):
     result = dict(raw); warnings = []
-    for field in ('tag', 'expand_nl', 'nl'):
-        value = result.get(field)
-        if not value:
-            continue
-        text = ', '.join(value) if field == 'tag' else value
+    def convert(text, field):
         try:
-            converted = convert_nai_to_anima(text)
-        except Exception:
-            raise PromptError('import:conversion_failed') from None
-        warnings.extend(plain(converted.warnings))
-        result[field] = [part.strip() for part in converted.text.split(',') if part.strip()] if field == 'tag' else converted.text
+            converted = normalize_prompt(text, source)
+        except PromptError as exc:
+            raise PromptError(exc.code, issues=tuple(replace(i, field=field) for i in
+                              exc.issues or (Issue(exc.code),))) from None
+        warnings.extend(dict(plain(i), field=field, severity='warning') for i in converted.warnings)
+        return converted.text
+    require(isinstance(result.get('nl'), str))
+    result['nl'] = convert(result['nl'], 'nl')
+    variants = result.get('variants', {})
+    require(isinstance(variants, dict))
+    require(all(isinstance(v, str) for v in variants.values()))
+    result['variants'] = {k: convert(v, f'variants[{k!r}]') if v else v for k, v in variants.items()}
     return result, warnings
 
 
@@ -120,22 +130,50 @@ class GroupExchange:
         self.store, self.clock, self.previews, self.artifacts = store, clock, {}, {}
         self.preview_requests = {}
 
+    @property
+    def preview_bytes(self):
+        # Count both frozen text representations and full/thumbnail payloads.
+        return sum(len(json.dumps(plain((p[1], p[2], p[4])), ensure_ascii=False).encode('utf-8'))
+                   + sum(len(a.full) + len(a.thumb) for a in p[3].values())
+                   for p in self.previews.values())
+
+    def _sweep_previews(self):
+        now = self.clock()
+        for identity, frozen in list(self.previews.items()):
+            if frozen[0] <= now:
+                del self.previews[identity]
+        self.preview_requests = {k: v for k, v in self.preview_requests.items()
+                                 if v[1] in self.previews}
+
+    def _cache_preview(self, identity, frozen):
+        self._sweep_previews()
+        self.previews[identity] = frozen
+        # FIFO eviction bounds retained text and images across all import formats.
+        # An individual oversized preview is rejected after evicting older items.
+        while len(self.previews) > PREVIEW_CACHE_COUNT or self.preview_bytes > PREVIEW_CACHE_BYTES:
+            del self.previews[next(iter(self.previews))]
+        self._sweep_previews()
+        require(identity in self.previews, 'import:limit')
+
     def preview_import(self, data, options=None, request_key=None):
         options = options or {}
+        if isinstance(options, dict) and options.get('format') == 'nai_images':
+            return self.preview_images(data, options, request_key)
+        return self._preview_import(data, options, request_key)
+
+    def _preview_import(self, data, options, request_key=None, *, decoded=None):
+        self._sweep_previews()
+        # Trusted image rows bypass the JSON upload byte cap; the image service
+        # has already enforced its own batch cap. Row normalization stays shared.
         require(isinstance(options, dict) and set(options) <= {'format', 'level', 'ref', 'metadata', 'source_format', 'entry_ids'})
         format = options.get('format', 'json')
         level = options.get('level', 'group')
-        require(format in ('json', 'folder', 'zip') and level in ('group', 'entries'))
+        require(format in ('json', 'txt', 'folder', 'zip', 'nai_image_zip') and level in ('group', 'entries'))
         require(options.get('source_format', 'anima') in ('anima', 'nai'))
-        if options.get('source_format') == 'nai':
-            # Fail explicitly even when all rows are invalid or empty.
-            try:
-                from .nai_convert import convert_nai_to_anima
-            except ImportError:
-                raise PromptError('import:unsupported') from None
-        files = read_package(data) if format != 'json' else {}
+        package = format in ('folder', 'zip', 'nai_image_zip')
+        files = read_image_pack(data) if format == 'nai_image_zip' else read_package(data) if package else {}
         source_digest = digest({k: hashlib.sha256(v).hexdigest() for k,v in files.items()}) if files else hashlib.sha256(data).hexdigest()
-        request_digest = digest([source_digest, options])
+        request_digest = digest([source_digest, options, 'nai-storage-v1'])
         if request_key is not None:
             require(isinstance(request_key, str) and 0 < len(request_key) <= 256)
             if request_key in self.preview_requests:
@@ -147,10 +185,15 @@ class GroupExchange:
                     self.store.root(target)
                 require(previous_digest == request_digest, 'dictionary:request_key_conflict')
                 return plain(frozen[1])
-        raw = parse_json(files['group.json'] if files else data)
+        diagnostics = decode_group_txt(data) if format == 'txt' else {}
+        if decoded is not None:
+            raw = decoded
+        else:
+            raw = ({k: diagnostics[k] for k in ('group_metadata', 'prompts')} if format == 'txt'
+                   else parse_json(files['group.json'] if files else data))
         metadata, manifest = {}, {}
-        if isinstance(raw, dict) and (level == 'group' or format != 'json'):
-            allowed = {'group_metadata', 'prompts'} | ({'preview_manifest'} if format != 'json' else set())
+        if isinstance(raw, dict) and (level == 'group' or format != 'json' or 'prompts' in raw):
+            allowed = {'group_metadata', 'prompts'} | ({'preview_manifest'} if package else set())
             if 'prompts' not in raw:
                 raise PromptError('schema:invalid', issues=(Issue('schema:invalid', message='请使用键名 prompts', field='prompts'),))
             require(not set(raw)-allowed, 'schema:invalid')
@@ -159,16 +202,25 @@ class GroupExchange:
             rows = raw['prompts']
         else:
             rows = [raw] if isinstance(raw, dict) and level == 'entries' else raw
-        require(isinstance(metadata, dict) and set(metadata) <= {'format_version', 'group_id', 'name', 'nsfw', 'scope', 'category'})
+        require(isinstance(metadata, dict) and set(metadata) <= {'format_version', 'group_id', 'name', 'nsfw', 'scope', 'category', 'auto_complete', 'prompt_format', 'normalization_version'})
         require(type(metadata.get('format_version', 1)) is int)
-        require(metadata.get('format_version', 1) == 1, 'newer_version')
+        version = metadata.get('format_version', 1)
+        require(version in (1, 2), 'newer_version')
+        if version == 2:
+            require(metadata.get('prompt_format') == 'nai')
+            require(metadata.get('normalization_version') == 'nai-storage-v1')
+            require(options.get('source_format', 'nai') == 'nai')
+        source = 'nai' if version == 2 else options.get('source_format', 'anima')
         if metadata:
             Group(metadata.get('group_id', str(uuid4())), metadata.get('name', '导入提示词组'),
-                  metadata.get('scope', 'global'), metadata.get('nsfw', False), category=metadata.get('category', 'full_content'))
-        require(isinstance(rows, list) and bool(rows), 'import:empty')
+                  metadata.get('scope', 'global'), metadata.get('nsfw', False), category=metadata.get('category', 'full_content'),
+                  auto_complete=metadata.get('auto_complete', True))
+        require(isinstance(rows, list), 'schema:invalid')
         require(len(rows) <= ENTRY_LIMIT, 'import:limit')
         require(isinstance(manifest, dict))
-        if format != 'json':
+        if format == 'nai_image_zip':
+            validate_image_pack(files, raw)
+        elif package:
             declared = {'group.json'}
             for identity, spec in manifest.items():
                 identifier(identity)
@@ -192,10 +244,11 @@ class GroupExchange:
         else:
             scope = metadata.get('scope', 'project' if current else 'global')
             group = Group(metadata.get('group_id', str(uuid4())), metadata.get('name', '导入提示词组'), scope,
-                          metadata.get('nsfw', False), category=metadata.get('category', 'full_content'))
+                          metadata.get('nsfw', False), category=metadata.get('category', 'full_content'),
+                          auto_complete=metadata['auto_complete'] if 'auto_complete' in metadata else self.store.auto_complete_default())
             revision = 0
             target = GroupRef(scope, current[0] if scope == 'project' and current else '' if scope == 'project' else None, group.dictionary_id)
-        issues, warnings, entries, assets = [], [], [], {}
+        issues, warnings, entries, assets = diagnostics.get('issues', []), diagnostics.get('warnings', []), [], {}
         blocked = target.scope == 'project' and not current
         original_id = group.dictionary_id
         if not revision and not blocked and self.store.path(target).exists():
@@ -203,24 +256,33 @@ class GroupExchange:
             target = replace(target, group_id=group.dictionary_id)
         used_ids = set()
         for row_number, row in enumerate(rows, 1):
+            if format == 'txt':
+                row_number = diagnostics['row_numbers'][row_number-1]
             try:
                 require(isinstance(row, dict))
-                if format == 'json':
-                    require(not set(row)-{'tag', 'expand_nl', 'nl', 'disable', 'aspect'})
-                else:
+                if package:
                     identifier(row.get('entry_id'))
                 original_entry_id = row.get('entry_id')
                 if options.get('entry_ids') is not None and original_entry_id not in options['entry_ids']:
                     continue
-                entry = validate_entry(row)
-                if options.get('source_format') == 'nai':
-                    converted, notes = convert_entry(row)
-                    entry = validate_entry(converted); warnings.extend(notes)
+                if version == 1:
+                    allowed = {'nl', 'tag', 'expand_nl', 'variants', 'aspect', 'disable'}
+                    require(set(row) <= allowed | ({'entry_id'} if package else set()))
+                    notes = legacy_content_issues(row)
+                    warnings.extend(plain(replace(i, row=row_number)) for i in notes)
+                    warnings.append(plain(Issue('import:legacy_format', row=row_number,
+                        severity='warning', message=f'旧格式适配；来源 {source}。')))
+                    merged = merge_legacy_content(row)
+                    row = {k: v for k, v in row.items() if k not in ('tag', 'expand_nl')}
+                    row['nl'] = merged
+                converted, notes = normalize_entry(row, source)
+                entry = validate_entry(converted, allow_id=package)
+                warnings.extend(dict(i, row=row_number) for i in notes)
                 require(entry.entry_id not in used_ids, 'entry:id_conflict')
                 used_ids.add(entry.entry_id)
                 if revision:
                     entry = replace(entry, entry_id=str(uuid4()))
-                if original_entry_id in manifest:
+                if original_entry_id in manifest and not manifest[original_entry_id].get('placeholder', False):
                     assets[entry.entry_id] = prepare_preview(files[manifest[original_entry_id]['file']], entry.entry_id)
                 entries.append(entry)
             except PromptError as exc:
@@ -233,16 +295,51 @@ class GroupExchange:
         preview = dict(preview_id=str(uuid4()), ref=plain(target), base_revision=revision,
                        entries=plain(entries), issues=issues, warnings=warnings, valid_count=len(entries),
                        skipped_count=len(issues and {i['row'] for i in issues} or ()),
-                       metadata=dict(name=group.name, nsfw=group.nsfw, scope=group.scope),
-                       id_mapping={original_id: group.dictionary_id}, blocked=blocked)
+                       metadata=dict(name=group.name, nsfw=group.nsfw, scope=group.scope, auto_complete=group.auto_complete),
+                        id_mapping={original_id: group.dictionary_id}, blocked=blocked,
+                        normalization_version='nai-storage-v1')
+        if format == 'nai_image_zip':
+            preview['format'] = format
         preview['digest'] = digest(preview)
-        self.previews[preview['preview_id']] = (self.clock()+900, preview, tuple(entries), assets, group)
+        self._cache_preview(preview['preview_id'], (self.clock()+900, preview, tuple(entries), assets, group))
         if request_key is not None:
             self.preview_requests[request_key] = (request_digest, preview['preview_id'])
         return plain(preview)
 
-    def commit_import(self, preview_id, signature, expected_revision, request_key, ref=None):
+    def preview_images(self, files, options=None, request_key=None):
+        # T10: pass ordered multipart (filename, bytes) pairs, never a name-keyed dict.
+        from .group_image_import import preview_images
+        return preview_images(self, files, options, request_key)
+
+    def preview_image(self, preview_id, entry_id, size='thumb'):
+        """Return frozen sanitized WebP bytes and SHA-256 before confirmation."""
+        self._sweep_previews()
+        require(size in ('full', 'thumb'))
         frozen = self.previews.get(preview_id)
+        require(frozen is not None and frozen[0] > self.clock(), 'preview:expired')
+        if not frozen[1]['blocked']:
+            self.store.root(GroupRef(**frozen[1]['ref']))
+        asset = frozen[3].get(entry_id)
+        require(asset is not None, 'image:not_found')
+        data = asset.thumb if size == 'thumb' else asset.full
+        return data, hashlib.sha256(data).hexdigest()
+
+    def commit_import(self, preview_id, signature, expected_revision, request_key, ref=None):
+        self._sweep_previews()
+        frozen = self.previews.get(preview_id)
+        target = ref or (GroupRef(**frozen[1]['ref']) if frozen else None)
+        payload = {'preview_id': preview_id, 'digest': signature}
+        require(isinstance(request_key, str) and 0 < len(request_key) <= 256)
+        require(type(expected_revision) is int and expected_revision >= 0)
+        if target is not None:
+            with LOCK:
+                raw = self.store._raw(target, absent=True)
+                receipt = (raw or {}).get('_operations', {}).get(request_key)
+                if receipt is not None:
+                    expected_digest = digest(dict(operation='import', payload=payload,
+                                                  expected_revision=expected_revision))
+                    require(receipt['digest'] == expected_digest, 'dictionary:request_key_conflict')
+                    return plain(receipt['result'])
         require(frozen is not None and frozen[0] > self.clock(), 'preview:expired')
         _, preview, entries, assets, template = frozen
         require(signature == preview['digest'], 'dictionary:request_key_conflict')
@@ -255,8 +352,15 @@ class GroupExchange:
             current = list(old.entries) if old else []
             inserted = duplicates = 0
             conflicts = []
+            def key(e):
+                base = (e.nl, e.aspect, dict(e.variants))
+                if preview.get('format') in ('nai_images', 'nai_image_zip'):
+                    asset = assets.get(e.entry_id)
+                    sha = (hashlib.sha256(asset.full).hexdigest() if asset else
+                           e.preview.sha256 if e.preview else None)
+                    return base + (e.disable, sha)
+                return base
             for entry in entries:
-                key = lambda e: (tuple(sorted(e.tag)), e.expand_nl, e.nl, e.aspect)
                 match = next((e for e in current if key(e) == key(entry)), None)
                 if match:
                     if match.disable != entry.disable:
@@ -269,13 +373,20 @@ class GroupExchange:
                 current.append(entry); inserted += 1
             group = replace(old or template, entries=tuple(current))
             return group, dict(ref=plain(target), inserted=inserted, duplicates=duplicates, conflicts=conflicts)
-        return self.store.mutate(target, expected_revision, request_key, 'import', {'preview_id': preview_id, 'digest': signature}, change)
+        result = self.store.mutate(target, expected_revision, request_key, 'import', {'preview_id': preview_id, 'digest': signature}, change)
+        assets.clear()
+        return result
 
     def export_group(self, ref, format='json'):
-        require(format in ('json', 'folder', 'zip'))
+        require(format in ('json', 'txt', 'folder', 'zip', 'nai_image_zip'))
         with self.store.lease(ref) as group:
-            metadata = dict(format_version=1, group_id=group.dictionary_id, name=group.name,
-                            nsfw=group.nsfw, scope=group.scope, category=group.category)
+            metadata = dict(format_version=2, prompt_format='nai', normalization_version='nai-storage-v1',
+                            group_id=group.dictionary_id, name=group.name,
+                            nsfw=group.nsfw, scope=group.scope, category=group.category, auto_complete=group.auto_complete)
+            if format == 'nai_image_zip':
+                return write_image_pack(self.store, ref, group, metadata)
+            if format == 'txt':
+                return encode_group_txt(metadata, group.entries)
             raw = dict(group_metadata=metadata, prompts=[content(e) for e in group.entries])
             if format == 'json':
                 return json.dumps(raw, ensure_ascii=False).encode('utf-8')

@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 from starlette.responses import Response
 from stylelora.runtime.contracts import Failure, canonical
 from .errors import response
+from .uploads import bounded_body, IMPORT_BODY_LIMIT
 
 
 def strict_json(raw):
@@ -62,12 +63,10 @@ async def protect(request, call_next):
             raise Failure(503, 'process:draining')
         if request.headers.get('content-encoding'):
             raise Failure(415, 'request:encoding_unsupported')
-        raw = bytearray()
-        async for chunk in request.stream():
-            raw.extend(chunk)
-            if len(raw) > (101 if path == '/api/prompt-imports/preview' else 16)*1024*1024:
-                raise Failure(413, 'request:too_large')
-        request._body = bytes(raw)
+        is_import = path == '/api/prompt-imports/preview'
+        raw = await bounded_body(request, IMPORT_BODY_LIMIT if is_import else 16*1024*1024,
+                                 'import:limit' if is_import else 'request:too_large')
+        request._body = raw
         content_type = request.headers.get('content-type', '')
         if raw and write and 'json' not in content_type and 'multipart/form-data' not in content_type:
             raise Failure(415, 'request:media_type_unsupported')
@@ -79,7 +78,8 @@ async def protect(request, call_next):
         lock, cached, identity = None, None, None
         if f27 and write and not request.headers.get('idempotency-key'):
             raise Failure(428, 'revision:required')
-        if request.method == 'POST' and path != '/api/session/bootstrap' and not f27:
+        # Pure live conversion must not accumulate entries in the unbounded cache.
+        if request.method == 'POST' and path not in ('/api/session/bootstrap', '/api/tools/prompt-convert') and not f27:
             try:
                 key = str(UUID(request.headers.get('idempotency-key', '')))
             except ValueError:

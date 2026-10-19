@@ -6,8 +6,66 @@ from stylelora.resources.network import NetworkController, NetworkPolicy
 
 
 class NetworkTests(unittest.IsolatedAsyncioTestCase):
-    async def test_T23_three_limits_and_shared_reference(self):
+    async def take(self, controller, endpoint='a', **kwargs):
+        return await asyncio.wait_for(controller.acquire(endpoint, ('shared',), cancel=None,
+                                                        deadline=float('inf'), **kwargs), 1)
+
+    async def test_default_four_and_endpoints_are_independent(self):
         controller = NetworkController()
+        leases = [await self.take(controller) for _ in range(4)]
+        waiting = asyncio.create_task(self.take(controller))
+        await asyncio.sleep(0.02)
+        self.assertFalse(waiting.done())
+        leases.extend([await self.take(controller, 'b') for _ in range(4)])
+        self.assertEqual(controller.active, 8)
+        self.assertEqual(controller.tokens['shared'], 8)
+        await leases.pop(0).release()
+        leases.append(await waiting)
+        for lease in leases:
+            await lease.release()
+        self.assertEqual(controller.active, 0)
+
+    async def test_unlimited_overrides_endpoint_default(self):
+        controller = NetworkController(NetworkPolicy(endpoint_default=1))
+        leases = [await self.take(controller, endpoint_limit=-1) for _ in range(12)]
+        self.assertEqual(controller.active, 12)
+        for lease in leases:
+            await lease.release()
+
+    async def test_explicit_limits_and_endpoint_limit_take_stricter(self):
+        for policy, limit in (
+            (NetworkPolicy(endpoint_default=1), 4),
+            (NetworkPolicy(endpoint_limits={'a': 2}), -1),
+            (NetworkPolicy(endpoint_limits={'a': 8}), 2),
+            (NetworkPolicy(token_limits={'shared': 2}), -1),
+            (NetworkPolicy(global_limit=2), -1),
+        ):
+            with self.subTest(policy=policy, limit=limit):
+                controller = NetworkController(policy)
+                count = 4 if policy.endpoint_default == 1 else 2
+                leases = [await self.take(controller, endpoint_limit=limit) for _ in range(count)]
+                waiting = asyncio.create_task(self.take(controller, endpoint_limit=limit))
+                await asyncio.sleep(0.02)
+                self.assertFalse(waiting.done())
+                await leases.pop().release()
+                leases.append(await waiting)
+                for lease in leases:
+                    await lease.release()
+
+    async def test_invalid_endpoint_override_and_policy_limits(self):
+        for value in (0, -2, True, False, 1.5, '4'):
+            with self.subTest(value=value):
+                controller = NetworkController()
+                with self.assertRaises(LlmFailure) as caught:
+                    await self.take(controller, endpoint_limit=value)
+                self.assertEqual(caught.exception.code, 'resource:invalid_policy')
+                self.assertEqual(controller.waiters, [])
+                for field in ('global_limit', 'endpoint_default', 'token_default', 'endpoint_limits', 'token_limits'):
+                    with self.assertRaises(LlmFailure):
+                        NetworkPolicy(**{field: {'a': value} if field.endswith('limits') else value})
+
+    async def test_T23_three_limits_and_shared_reference(self):
+        controller = NetworkController(NetworkPolicy(global_limit=2, token_default=1))
         first = await controller.acquire('a', ('shared',), cancel=CancelToken(), deadline=float('inf'))
         waiting = asyncio.create_task(controller.acquire('b', ('shared',), cancel=CancelToken(), deadline=float('inf')))
         await asyncio.sleep(0)
@@ -101,7 +159,7 @@ class NetworkTests(unittest.IsolatedAsyncioTestCase):
         await third.release()
 
     async def test_T26_invalid_policy_and_round_robin(self):
-        for value in (0, -1, True, 1.5):
+        for value in (0, -2, True, 1.5):
             with self.subTest(value=value), self.assertRaises(LlmFailure):
                 NetworkPolicy(global_limit=value)
         controller = NetworkController()

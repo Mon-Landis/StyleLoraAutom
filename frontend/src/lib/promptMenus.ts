@@ -18,20 +18,18 @@ export function groupMenuItems(p: {
   ];
 }
 
-/** 条目右键菜单：修改 / 复制 JSON / 禁用·启用 / 删除（长按 0.5s）/ LLM 补全。 */
+/** 条目右键菜单：修改 / 复制 JSON / 禁用·启用 / 删除（长按 0.5s）。F31 §7.3 起不再有手动 LLM 补全入口。 */
 export function entryMenuItems(p: {
   disabled: boolean;
   onEdit: () => void;
   onCopyJson: () => void;
   onToggleDisable: () => void;
   onDelete: () => void;
-  onComplete: () => void;
 }): MenuItem[] {
   return [
     { key: 'edit', label: '修改', onSelect: p.onEdit },
     { key: 'copy', label: '复制 JSON', onSelect: p.onCopyJson },
     { key: 'disable', label: p.disabled ? '启用' : '禁用', onSelect: p.onToggleDisable },
-    { key: 'complete', label: 'LLM 补全', onSelect: p.onComplete },
     { key: 'delete', label: '长按删除（0.5 秒）', danger: true, hold: { ms: HOLD_ENTRY_DELETE_MS, onConfirm: p.onDelete } },
   ];
 }

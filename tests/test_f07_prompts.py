@@ -47,6 +47,13 @@ class ValidationTests(unittest.TestCase):
             with self.subTest(value=value),self.assertRaises(PromptError): validate_composer_result(json.dumps(value),req)
         for text in ('```json\n{}\n```','{"status":"ok","status":"ok"}','NaN'):
             with self.assertRaises(PromptError): validate_composer_result(text,req)
+        # U26: NL paragraphs are allowed; CRLF normalized, extra blank lines collapsed, CJK still rejected.
+        nl_req=CompositionRequest({'scene':('forest',)},nl_enabled=True,tag_range=(1,10))
+        ok=validate_composer_result(json.dumps(result(natural_language='A girl stands.  \r\n\r\n\r\nA boy sits.')),nl_req)
+        self.assertEqual(ok.natural_language,'A girl stands.\n\nA boy sits.')
+        for nl in ('\n\n','A girl\u7ad9.'):
+            with self.subTest(nl=nl),self.assertRaises(PromptError):
+                validate_composer_result(json.dumps(result(natural_language=nl)),nl_req)
         for tag in ('soft brushstrokes','dreamy atmosphere','masterpiece','(forest:1.2)','test artist'):
             with self.assertRaises(PromptError): validate_content(PromptEntry((tag,)),catalog=catalog())
         validate_content(PromptEntry(('gradient hair','bow (weapon)')),catalog=catalog())

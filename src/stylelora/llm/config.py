@@ -81,6 +81,8 @@ def validate_endpoint(value: EndpointConfig) -> None:
         valid = (url.scheme in ('http', 'https') and url.hostname and not url.username
                  and not url.password and not url.query and not url.fragment)
         if (not valid or not re.fullmatch(r'[A-Za-z0-9_.-]+', value.endpoint_id)
+                or type(value.max_parallel) is not int
+                or (value.max_parallel != -1 and value.max_parallel < 1)
                 or value.revision < 0 or not value.protocol
                 or len({m.name for m in value.models}) != len(value.models)
                 or any(not m.name or m.capability_source not in ('manual', 'models', 'tested')
