@@ -12,7 +12,7 @@ from uuid import uuid4
 from PIL import Image, ImageOps, UnidentifiedImageError
 from .dictionaries import LOCK, _write, digest
 from .groups import Group, GroupRef, PreviewRef, decode_group, migrate_group
-from .group_legacy import legacy_content_issues
+from .group_legacy import legacy_content_issues, variant_issues
 from .types import PromptError, Issue, plain
 from .validation import require, strict_loads, identifier, PROMPT_GROUP_VERSIONS
 
@@ -93,9 +93,8 @@ def prepare_preview(data, entry_id):
 
 
 class GroupStore:
-    def __init__(self, product_root, project=lambda: None, *, auto_complete_default=lambda: True):
+    def __init__(self, product_root, project=lambda: None):
         self.product_root, self.project = Path(product_root), project
-        self.auto_complete_default = auto_complete_default
         self.leases = set()
 
     def root(self, ref):
@@ -122,19 +121,17 @@ class GroupStore:
             require(type(version) is int and version in PROMPT_GROUP_VERSIONS, 'newer_version')
             require(raw.get('dictionary_id') == ref.group_id and raw.get('scope', 'global') == ref.scope)
             if version in (1, 2, 3, 4):
-                default = self.auto_complete_default()
-                require(type(default) is bool)
+                issues = []
                 if raw.get('_deleted'):
                     migrated = raw | {'schema_version': 5, 'revision': raw['revision'] + 1,
-                                      'scope': ref.scope, 'auto_complete': raw.get('auto_complete', default),
+                                      'scope': ref.scope,
                                       'prompt_format': 'nai', 'normalization_version': 'nai-storage-v1'}
                 else:
-                    migrated = plain(migrate_group(raw, auto_complete_default=default))
+                    migrated = plain(migrate_group(raw, issues=issues))
                 operations = dict(raw.get('_operations', {}))
                 operations['migration:v5'] = {'digest': digest(raw), 'result': {
                     'revision': migrated['revision'], 'source_version': version,
-                    'warnings': plain(tuple(issue for row in raw.get('entries', [])
-                        for issue in legacy_content_issues(row))) if version in (3, 4) and not raw.get('_deleted') else [],
+                    'warnings': plain(tuple(issues)) if not raw.get('_deleted') else [],
                     'nsfw_promoted': version in (1, 2) and migrated.get('nsfw', False)}}
                 migrated['_operations'] = operations
                 backup = path.with_suffix(f'.v{version}.bak')

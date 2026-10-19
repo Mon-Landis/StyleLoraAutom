@@ -257,6 +257,20 @@ class GenerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(restored.records[record['id']]['status'], 'paused')
         self.assertEqual(len(self.llm.calls), 1)
 
+    async def test_restore_ignores_legacy_completion_records(self):
+        # A completion task persisted before F31 has no batches; loading must not crash.
+        import json
+        legacy = dict(id=str(uuid4()), ref=plain(self.ref), entries=[], base_revision=1,
+                      status='done', reports=[], inputs=[], request_key='old', digest='d',
+                      group_name='theme', version=1, content_schema_version=5,
+                      normalization_version='nai-storage-v1')
+        self.svc.root.mkdir(parents=True, exist_ok=True)
+        (self.svc.root/'legacy.json').write_text(json.dumps(legacy), encoding='utf-8')
+        (self.svc.root/'broken.json').write_text('{not json', encoding='utf-8')
+        restored = PromptGeneration(self.rt)
+        self.assertNotIn(legacy['id'], restored.records)
+        self.assertEqual(restored.records, {})
+
     async def test_restore_recovers_committed_batch_report(self):
         # Simulate a crash after the group snapshot (with receipt) but before the report save.
         record, _ = await self.run_task()

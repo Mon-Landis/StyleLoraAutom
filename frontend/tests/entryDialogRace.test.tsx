@@ -12,7 +12,6 @@ import { useVariantDrafts } from '../src/state/variantDrafts';
 const ref: GroupRef = { scope: 'global', project_token: null, group_id: 'g1' };
 const entry = (over: Partial<Entry> = {}): Entry => ({
   entry_id: 'e1', nl: 'a cat', disable: false, aspect: null, preview: null,
-  completion: { state: 'complete', missing: [], task_id: null, error_code: null },
   variants: {},
   ...over,
 });
@@ -127,7 +126,7 @@ describe('N4 离开 flush 不静默覆盖他人的改动', () => {
       }
       if (c.url.includes('/export')) return json({ nl: serverNl });
       if (c.method === 'POST') return json({ task_id: 't', status: 'done' }, 202);
-      return json({ revision: 7, auto_complete: true }, 200, '7');
+      return json({ revision: 7 }, 200, '7');
     });
   }
 

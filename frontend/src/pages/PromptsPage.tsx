@@ -216,7 +216,6 @@ export function PromptsPage() {
       void qc.invalidateQueries({ queryKey: ['pg-entries', k] });
     }
   }, [qc, selected, etag]);
-  // F31 §7.3：手动 LLM 补全入口已隐藏（后端退化为空任务，不能偷换成重写 nl）；enqueueCompletion 客户端函数保留。
 
   const onAction = (a: ControlAction) => {
     if (a === 'add' || a === 'append') setDialog({ kind: 'entry', mode: a });

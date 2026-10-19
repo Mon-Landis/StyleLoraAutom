@@ -24,13 +24,10 @@ export const EntryBlockView = memo(function EntryBlockView(p: {
 }) {
   const e = p.entry;
   const b = entryBlock(e);
-  const running = e.completion?.state === 'queued' || e.completion?.state === 'running';
   const label = `条目 ${b.nl}${e.disable ? '（已禁用）' : ''}`;
   const marks = (
     <div className="pg-entry__marks">
       {e.disable && <Badge tone="neutral">已禁用</Badge>}
-      {b.statusLabel && <Badge tone={e.completion?.state === 'failed' ? 'danger' : running ? 'info' : 'warning'}>{b.statusLabel}</Badge>}
-      {b.missingLabels.length > 0 && !running && <span className="pg-muted">缺：{b.missingLabels.join('、')}</span>}
     </div>
   );
   const thumb = e.preview && (

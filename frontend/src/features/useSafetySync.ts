@@ -39,21 +39,6 @@ export function useSafetyMutation() {
   });
 }
 
-/** F30：新建提示词组的自动补齐默认值（偏好）。只影响之后新建的组；未加载时按 true（后端默认）展示。 */
-export function usePromptAutoDefault() {
-  const qc = useQueryClient();
-  const q = useQuery({ queryKey: SETTINGS_KEY, queryFn: getSettings });
-  const mut = useMutation({
-    mutationFn: async (value: boolean) => {
-      const etag = q.data?.etag ?? useSafety.getState().etag;
-      if (!etag) throw new Error('settings:not_loaded');
-      return patchSettings({ prompt_auto_complete_default: value }, etag);
-    },
-    onSettled: () => void qc.invalidateQueries({ queryKey: SETTINGS_KEY }),
-  });
-  return { value: q.data?.data.prompt_auto_complete_default, loaded: !!q.data, mut };
-}
-
 /** 点击「显示」：先本地确认（立即清晰），再通知后端；失败不回滚本地（仅内存会话状态）。 */
 export async function confirmReveal(): Promise<void> {
   useSafety.getState().markRevealed();

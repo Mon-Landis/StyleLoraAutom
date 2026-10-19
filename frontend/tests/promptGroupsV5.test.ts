@@ -2,14 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setToken } from '../src/api/client';
 import { ApiError } from '../src/api/errors';
 import {
-  addEntry, confirmImport, enqueueCompletion, exportGroup, fetchImportPreviewBlob, importPreviewPath,
+  addEntry, confirmImport, exportGroup, fetchImportPreviewBlob, importPreviewPath,
   patchEntry, previewImportFiles,
 } from '../src/api/promptGroups';
 import type { GroupRef } from '../src/api/promptGroupTypes';
 import { downloadBlob } from '../src/lib/download';
 import { entryBlock, normalizeView } from '../src/lib/promptGroupList';
 import { describeErrorCode, importFileIssues } from '../src/lib/promptErrors';
-import { summarizeCompletion } from '../src/lib/completionWatch';
 
 const ref: GroupRef = { scope: 'global', project_token: null, group_id: 'g1' };
 
@@ -148,7 +147,7 @@ describe('T13 导出', () => {
   });
 });
 
-describe('T13 条目写入体与补齐任务', () => {
+describe('T13 条目写入体', () => {
   it('POST/PATCH 只带 nl，source_format 可选；不再有 tag/expand_nl', async () => {
     const calls = installFetch(() => json({ entry_id: 'e1', nl: 'x' }, 201, { ETag: '"2"' }));
     await addEntry(ref, { nl: ' raw ', source_format: 'anima' }, '1', 'k1');
@@ -159,18 +158,8 @@ describe('T13 条目写入体与补齐任务', () => {
     void patchEntry(ref, 'e1', { tag: ['a'] }, '2', 'k3').catch(() => {});
   });
 
-  it('补齐任务 v5 直接返回 202 + done 的空任务，客户端原样透传', async () => {
-    const calls = installFetch(() => json({ task_id: 't0', status: 'done' }, 202));
-    const t = await enqueueCompletion(ref, ['e1'], 5, 'k', 'manual');
-    expect(t).toEqual({ task_id: 't0', status: 'done' });
-    expect(JSON.parse(String(calls[0].body))).toMatchObject({ type: 'prompt_completion', entry_ids: ['e1'], base_revision: 5 });
-  });
-
-  it('prompt:schema_changed 给出重新提交提示，任务摘要里也带出', () => {
+  it('prompt:schema_changed 给出重新提交提示', () => {
     expect(describeErrorCode('prompt:schema_changed')).toContain('重新提交');
-    const s = summarizeCompletion({ task_id: 't', status: 'paused', reason_code: 'prompt:schema_changed', reports: [] }, '补齐');
-    expect(s.text).toContain('重新提交');
-    expect(s.tone).toBe('warning');
   });
 });
 
@@ -183,11 +172,10 @@ describe('T14 显示基础', () => {
     expect(normalizeView('variants')).toBe('variants');
   });
 
-  it('entryBlock 只暴露 nl 原文本，缺字段标签只有提示词', () => {
+  it('entryBlock 只暴露 nl 原文本', () => {
     const b = entryBlock({
       entry_id: 'e', nl: ' a ', disable: false, aspect: null, preview: null, variants: {},
-      completion: { state: 'pending', missing: ['nl'], task_id: null, error_code: null },
     });
-    expect(b).toEqual({ nl: ' a ', statusLabel: '待补全', missingLabels: ['提示词'] });
+    expect(b).toEqual({ nl: ' a ' });
   });
 });

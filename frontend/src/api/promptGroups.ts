@@ -1,7 +1,7 @@
 // F27 提示词组 API（docs/F27 §8）。契约文档 docs/frontend-contract-f27.md 到位后在此对齐。
 import { buildUrl, fetchBlob, get, patch, post, put, request, uuid, type Resp } from './client';
 import type {
-  CompletionTask, CompletionTrigger, TaskView, ExportFormat,
+  ExportFormat,
   DeleteReceipt, Entry, EntryDraft, EntryPatch, GroupCreateBody, GroupRef, GroupSummary, GroupView,
   ImportFormat, ImportLevel, ImportPreviewV3, ImportPreviewV5, ImportResult, PgPage, PromptFormat,
 } from './promptGroupTypes';
@@ -30,7 +30,7 @@ const wrap = <T>(r: Resp<T>): Versioned<T> => ({ data: r.data, etag: r.etag });
 export const getGroup = (ref: GroupRef, signal?: AbortSignal) =>
   get<GroupView & { entry_count?: number }>(G(ref.group_id), { query: refQuery(ref), signal }).then(wrap);
 
-export const patchGroup = (ref: GroupRef, body: { name?: string; nsfw?: boolean; auto_complete?: boolean }, etag: string, key = uuid()) =>
+export const patchGroup = (ref: GroupRef, body: { name?: string; nsfw?: boolean }, etag: string, key = uuid()) =>
   patch<GroupView>(G(ref.group_id), body, { query: refQuery(ref), ifMatch: etag, idempotencyKey: key }).then(wrap);
 
 export const deleteGroup = (ref: GroupRef, etag: string, key = uuid()) =>
@@ -77,7 +77,7 @@ export interface ImportOptions {
   ref?: GroupRef;
   /** nai_images 固定 nai，调用方不应传 anima。 */
   source_format?: PromptFormat;
-  metadata?: { group_id?: string; name?: string; nsfw?: boolean; scope?: 'global' | 'project'; auto_complete?: boolean };
+  metadata?: { group_id?: string; name?: string; nsfw?: boolean; scope?: 'global' | 'project' };
 }
 
 /** JSON body 预览（粘贴文本/已解析 JSON）。文件类来源用 previewImportFiles。 */
@@ -119,23 +119,6 @@ export const exportGroupJson = (ref: GroupRef) =>
 /** 导出为附件 Blob：json（application/json）或 nai_image_zip（application/zip）。下载见 lib/download.downloadBlob。 */
 export const exportGroup = (ref: GroupRef, format: ExportFormat, signal?: AbortSignal): Promise<Blob> =>
   fetchBlob(buildUrl(`${G(ref.group_id)}/export`, { ...refQuery(ref), format }), signal);
-
-// ---- LLM 补全（统一任务入口）----
-/**
- * 发布补全任务。manual：ids 省略=全组；auto_leave：后端禁止 entry_ids 字段（含 null），这里一律不带。
- * 202 返回 TaskView；无候选时 status=done 的空任务。412=revision 过期，409=同键不同请求。
- */
-export const enqueueCompletion = (
-  ref: GroupRef, ids: string[] | undefined, baseRevision: number, key = uuid(),
-  trigger: CompletionTrigger = 'manual', opts: { keepalive?: boolean } = {},
-) => {
-  const body: Record<string, unknown> = { type: 'prompt_completion', ref, base_revision: baseRevision, trigger };
-  if (trigger === 'manual' && ids !== undefined) body.entry_ids = ids;
-  return post<TaskView>('/api/tasks', body, { idempotencyKey: key, keepalive: opts.keepalive }).then((r) => r.data);
-};
-
-export const getCompletionTask = (id: string, signal?: AbortSignal) =>
-  get<CompletionTask>(`/api/tasks/${encodeURIComponent(id)}`, { signal }).then((r) => r.data);
 
 export const enqueueGeneration = (ref: GroupRef, brief: string, count: number, key = uuid()) =>
   post<{ task_id: string }>('/api/tasks', { type: 'prompt_generation', ref, brief, count }, { idempotencyKey: key }).then((r) => r.data);

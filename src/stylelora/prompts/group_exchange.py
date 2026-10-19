@@ -10,7 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
 from .groups import Group, GroupRef, content, validate_entry
-from .group_legacy import merge_legacy_content, legacy_content_issues
+from .group_legacy import legacy_texts, legacy_content_issues, variant_issues, nl_fallback
 from .prompt_normalize import normalize_prompt
 from .group_store import (JSON_LIMIT, ZIP_LIMIT, EXPANDED_LIMIT, IMAGE_LIMIT,
                           ENTRY_LIMIT, prepare_preview)
@@ -213,8 +213,7 @@ class GroupExchange:
         source = 'nai' if version == 2 else options.get('source_format', 'anima')
         if metadata:
             Group(metadata.get('group_id', str(uuid4())), metadata.get('name', '导入提示词组'),
-                  metadata.get('scope', 'global'), metadata.get('nsfw', False), category=metadata.get('category', 'full_content'),
-                  auto_complete=metadata.get('auto_complete', True))
+                  metadata.get('scope', 'global'), metadata.get('nsfw', False), category=metadata.get('category', 'full_content'))
         require(isinstance(rows, list), 'schema:invalid')
         require(len(rows) <= ENTRY_LIMIT, 'import:limit')
         require(isinstance(manifest, dict))
@@ -244,8 +243,7 @@ class GroupExchange:
         else:
             scope = metadata.get('scope', 'project' if current else 'global')
             group = Group(metadata.get('group_id', str(uuid4())), metadata.get('name', '导入提示词组'), scope,
-                          metadata.get('nsfw', False), category=metadata.get('category', 'full_content'),
-                          auto_complete=metadata['auto_complete'] if 'auto_complete' in metadata else self.store.auto_complete_default())
+                          metadata.get('nsfw', False), category=metadata.get('category', 'full_content'))
             revision = 0
             target = GroupRef(scope, current[0] if scope == 'project' and current else '' if scope == 'project' else None, group.dictionary_id)
         issues, warnings, entries, assets = diagnostics.get('issues', []), diagnostics.get('warnings', []), [], {}
@@ -268,13 +266,25 @@ class GroupExchange:
                 if version == 1:
                     allowed = {'nl', 'tag', 'expand_nl', 'variants', 'aspect', 'disable'}
                     require(set(row) <= allowed | ({'entry_id'} if package else set()))
-                    notes = legacy_content_issues(row)
+                    texts = legacy_texts(row)
+                    notes = list(legacy_content_issues(row)) + list(variant_issues(row))
+                    variants = dict(row.get('variants') or {})
+                    for legacy in ('tag', 'expand_nl'):
+                        # Conflicts keep the existing value; the 64-key limit drops the extra.
+                        if legacy in variants or not texts[legacy].strip() or len(variants) >= 64:
+                            continue
+                        variants[legacy] = texts[legacy]
+                    fallback = nl_fallback(texts)
+                    if fallback is not None:
+                        # v5 requires nl: same order as the group migration.
+                        texts['nl'] = texts[fallback]
+                        notes.append(Issue('migration:nl_fallback', field=row.get('entry_id'),
+                            severity='warning', message=f'source={fallback}'))
                     warnings.extend(plain(replace(i, row=row_number)) for i in notes)
                     warnings.append(plain(Issue('import:legacy_format', row=row_number,
                         severity='warning', message=f'旧格式适配；来源 {source}。')))
-                    merged = merge_legacy_content(row)
                     row = {k: v for k, v in row.items() if k not in ('tag', 'expand_nl')}
-                    row['nl'] = merged
+                    row['nl'], row['variants'] = texts['nl'], variants
                 converted, notes = normalize_entry(row, source)
                 entry = validate_entry(converted, allow_id=package)
                 warnings.extend(dict(i, row=row_number) for i in notes)
@@ -295,7 +305,7 @@ class GroupExchange:
         preview = dict(preview_id=str(uuid4()), ref=plain(target), base_revision=revision,
                        entries=plain(entries), issues=issues, warnings=warnings, valid_count=len(entries),
                        skipped_count=len(issues and {i['row'] for i in issues} or ()),
-                       metadata=dict(name=group.name, nsfw=group.nsfw, scope=group.scope, auto_complete=group.auto_complete),
+                       metadata=dict(name=group.name, nsfw=group.nsfw, scope=group.scope),
                         id_mapping={original_id: group.dictionary_id}, blocked=blocked,
                         normalization_version='nai-storage-v1')
         if format == 'nai_image_zip':
@@ -382,7 +392,7 @@ class GroupExchange:
         with self.store.lease(ref) as group:
             metadata = dict(format_version=2, prompt_format='nai', normalization_version='nai-storage-v1',
                             group_id=group.dictionary_id, name=group.name,
-                            nsfw=group.nsfw, scope=group.scope, category=group.category, auto_complete=group.auto_complete)
+                            nsfw=group.nsfw, scope=group.scope, category=group.category)
             if format == 'nai_image_zip':
                 return write_image_pack(self.store, ref, group, metadata)
             if format == 'txt':

@@ -9,6 +9,14 @@ from .contracts import fields, check, Failure
 # resources.json 网络策略版本；v1 的默认值为 global 2 / endpoint 2 / token 1（U27 前）
 RESOURCE_POLICY_VERSION = 2
 LEGACY_NETWORK_DEFAULTS = {'global_limit': 2, 'endpoint_default': 2, 'token_default': 1}
+# Settings retired from the API contract: old product files may still carry them.
+RETIRED_SETTINGS = frozenset({'prompt_auto_complete_default'})
+INTERNAL_SETTINGS = frozenset({'_safety_operations'})
+
+
+def public_settings(data):
+    """Drop retired/internal keys so they never leak into a response."""
+    return {k: v for k, v in data.items() if k not in RETIRED_SETTINGS | INTERNAL_SETTINGS}
 
 
 class ProductStore:
@@ -19,15 +27,15 @@ class ProductStore:
         self.defaults = dict(revision=0, cost_policy='ask', storage_thresholds={'project_bytes': 5_000_000_000},
                              llm_limits={'concurrency': 2, 'timeout_s': 120}, wd_enabled=False,
                              mcp={'discovery_mode': 'default'}, capabilities={},
-                             nsfw_enabled=False, nsfw_display_mode='click_reveal',
-                             prompt_auto_complete_default=True)
+                             nsfw_enabled=False, nsfw_display_mode='click_reveal')
 
     async def call(self, work):
         return await asyncio.wrap_future(self.queue.submit(work))
 
     def get(self):
-        data = deepcopy(self.defaults) | read_json(self.root / 'config.json', {})
-        return {k:v for k,v in data.items() if k != '_safety_operations'} | {'version': str(data['revision'])}
+        data = deepcopy(self.defaults) | {k: v for k, v in read_json(self.root / 'config.json', {}).items()
+                                          if k not in RETIRED_SETTINGS}
+        return public_settings(data) | {'version': str(data['revision'])}
 
     def update(self, patch, expected):
         fields(patch, {'cost_policy', 'storage_thresholds', 'llm_limits', 'wd_enabled', 'mcp'})
@@ -52,7 +60,7 @@ class ProductStore:
             data['revision'] += 1
             operations = read_json(self.root/'config.json', {}).get('_safety_operations')
             atomic_json(self.root / 'config.json', data | ({'_safety_operations': operations} if operations else {}))
-        return data | {'version': str(data['revision'])}
+        return public_settings(data) | {'version': str(data['revision'])}
 
     def close(self):
         self.queue.shutdown(wait=True)
@@ -60,9 +68,7 @@ class ProductStore:
     def update_safety(self, patch, expected, request_key):
         from stylelora.prompts.dictionaries import LOCK, digest
         with LOCK:
-            fields(patch, {'nsfw_enabled', 'nsfw_display_mode', 'image_display', 'prompt_auto_complete_default'})
-            if 'prompt_auto_complete_default' in patch and type(patch['prompt_auto_complete_default']) is not bool:
-                raise Failure(422, 'schema:invalid')
+            fields(patch, {'nsfw_enabled', 'nsfw_display_mode', 'image_display'})
             if 'image_display' in patch:
                 if 'nsfw_display_mode' in patch and patch['image_display'] != patch['nsfw_display_mode']:
                     raise Failure(422, 'schema:invalid')
@@ -75,11 +81,12 @@ class ProductStore:
             if request_key in operations:
                 if operations[request_key]['digest'] != signature:
                     raise Failure(409, 'dictionary:request_key_conflict')
-                return operations[request_key]['result']
+                # Receipts cached before retirement may still embed the old field.
+                return public_settings(operations[request_key]['result'])
             if data['revision'] != expected:
                 raise Failure(412, 'settings:revision_conflict')
             data.update(patch); data['revision'] += 1
-            result = data | {'version': str(data['revision'])}
+            result = public_settings(data | {'version': str(data['revision'])})
             operations[request_key] = {'digest': signature, 'result': result}
             atomic_json(self.root/'config.json', data | {'_safety_operations': operations})
             return result

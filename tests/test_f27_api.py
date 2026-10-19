@@ -130,6 +130,15 @@ class GroupApiTests(unittest.TestCase):
         self.assertEqual(response.status_code,422,response.text)
         self.assertEqual(self.client.patch('/api/settings',json={'nsfw_enabled':False},headers=self.headers(0)).status_code,412)
 
+    def test_completion_task_type_is_unsupported(self):
+        path = self.group()
+        body = {'type':'prompt_completion','ref':{'scope':'global','project_token':None,
+                'group_id':path.rsplit('/',1)[1]},'base_revision':1}
+        response = self.client.post('/api/tasks',json=body,headers=self.headers())
+        self.assertEqual(response.status_code,422,response.text)
+        self.assertEqual(response.json()['error']['code'],'task:type_unsupported')
+        self.assertEqual(self.client.post('/api/tasks',json=body|{'type':'unknown'},headers=self.headers()).status_code,422)
+
     def test_project_replay_revalidates_context(self):
         self.client.portal.call(lambda: self.rt.open(Path(self.temp.name)/'project.slproj',create={'name':'Project','trigger_word':''}))
         token = self.rt.current.project_id
@@ -142,29 +151,3 @@ class GroupApiTests(unittest.TestCase):
         self.assertEqual(second.status_code,409,second.text)
         self.assertEqual(second.json()['error']['code'],'project:closed')
 
-    def test_completion_through_unified_api(self):
-        from test_f27_completion import FakeLLM
-        from stylelora.runtime.prompt_completion import PromptCompletion
-        from stylelora.vision.executor import SkillStore
-        import hashlib
-        self.rt.llm = FakeLLM()
-        text = 'Fake skill for API verification.'
-        svc = PromptCompletion(self.rt,skills=SkillStore([text]),skill_hash=hashlib.sha256(text.encode()).hexdigest())
-        self.rt.prompt_completion = svc
-        path = self.group(); entry = self.entry(path,nl='cat')
-        before = self.client.get(path).json()
-        body = {'type':'prompt_completion','ref':{'scope':'global','project_token':None,'group_id':path.rsplit('/',1)[1]},
-                'entry_ids':[entry.rsplit('/',1)[1]],'base_revision':2}
-        response = self.client.post('/api/tasks',json=body,headers=self.headers())
-        self.assertEqual(response.status_code,202,response.text)
-        identity = response.json()['task_id']
-        linked = self.rt.tasks._record(identity)[1]
-        self.client.portal.call(svc.wait,linked.id)
-        detail = self.client.get('/api/tasks/'+identity)
-        self.assertEqual(detail.status_code,200,detail.text)
-        self.assertEqual(detail.json()['status'],'done')
-        self.assertEqual(detail.json()['type'],'prompt_completion')
-        self.assertIsNone(self.client.get(entry).json()['completion']['task_id'])
-        self.assertEqual(detail.json()['reports'], [])
-        self.assertEqual(self.rt.llm.calls, [])
-        self.assertEqual(self.client.get(path).json(), before)

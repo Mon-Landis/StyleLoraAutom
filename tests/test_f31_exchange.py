@@ -43,13 +43,38 @@ class ExchangeV2Tests(unittest.TestCase):
         self.assertEqual(copied['entries'][0]['nl'], p['entries'][0]['nl'])
         self.assertEqual(copied['entries'][0]['variants'], p['entries'][0]['variants'])
 
-    def test_legacy_merge_preserves_duplicates_and_reports(self):
-        p = self.preview([dict(tag=['cat'], expand_nl='cat', nl='cat'),
+    def test_legacy_tag_and_expand_become_variants_and_report(self):
+        p = self.preview([dict(tag=['(blue_cat:1.3)'], expand_nl=' Window ', nl='A cat sits.'),
                           dict(tag=['(broken'])], metadata={})
-        self.assertEqual(p['entries'][0]['nl'], 'cat\n\ncat\n\ncat')
+        self.assertEqual(p['entries'][0]['nl'], 'A cat sits.')
+        self.assertEqual(p['entries'][0]['variants'],
+                         {'tag': '1.5::blue cat::', 'expand_nl': ' Window '})
         self.assertEqual(p['skipped_count'], 1)
         self.assertEqual(p['issues'][0]['row'], 2)
+
+    def test_legacy_variant_conflict_and_limit_warn_without_losing_nl(self):
+        p = self.preview([dict(tag=['cat'], expand_nl='cat', nl='cat', variants={'tag': 'keep'}),
+                          dict(tag=['new'], expand_nl='newer', nl='kept',
+                               variants={str(i): 'x' for i in range(63)})], metadata={})
+        # Existing variant key wins over the legacy field.
+        self.assertEqual(p['entries'][0]['nl'], 'cat')
+        self.assertEqual(p['entries'][0]['variants'], {'tag': 'keep', 'expand_nl': 'cat'})
+        conflict = [w for w in p['warnings'] if w['code'] == 'migration:variant_conflict']
+        self.assertEqual([w['row'] for w in conflict], [1])
+        # The 64-key limit drops only the extra variant, never nl.
+        self.assertEqual(p['entries'][1]['nl'], 'kept')
+        self.assertEqual(len(p['entries'][1]['variants']), 64)
+        limited = [w for w in p['warnings'] if w['code'] == 'migration:variant_limit']
+        self.assertEqual([w['row'] for w in limited], [2])
+
+    def test_legacy_duplicate_warning_and_nl_fallback(self):
+        p = self.preview([dict(tag=['cat'], expand_nl='cat', nl=''),
+                          dict(tag=['Sitting.'], nl='A cat sits.')], metadata={})
+        # Empty nl falls back to expand_nl first, then tag; the source stays a variant.
+        self.assertEqual(p['entries'][0]['nl'], 'cat')
+        self.assertEqual(p['entries'][0]['variants'], {'tag': 'cat', 'expand_nl': 'cat'})
         self.assertTrue(any(w['code'] == 'migration:possible_duplicate' for w in p['warnings']))
+        self.assertTrue(any(w['code'] == 'migration:nl_fallback' for w in p['warnings']))
 
     def test_v2_rejects_legacy_and_internal_fields_per_row(self):
         rows = [{'nl': 'ok'}] + [{'nl': 'bad', k: {}} for k in

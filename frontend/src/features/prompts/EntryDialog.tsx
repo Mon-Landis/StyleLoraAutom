@@ -176,7 +176,7 @@ export function EntryDialog({ mode, gref, etag, entry, onClose, onSaved }: {
     created.current = true;
     persisted.current = { nl: draft.nl };
     const fallback: Partial<Entry> = {
-      preview: null, variants: {}, completion: { state: 'complete', missing: [], task_id: null, error_code: null },
+      preview: null, variants: {},
     };
     base.current = { ...fallback, ...draft, ...r.data };
     backfillCanonical(draft.nl, r.data.nl);

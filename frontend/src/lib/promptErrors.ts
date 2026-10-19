@@ -23,10 +23,6 @@ const TEXT: Record<string, string> = {
   'schema:invalid': '内容校验失败，请检查输入',
   'import:empty': '没有有效条目可导入',
   'preview:expired': '导入预览已过期，请重新预览',
-  'completion:unavailable': 'LLM 补全暂不可用，请先配置提示词 skill 与 LLM 端点',
-  'completion:stale': '条目已变化，补全结果需复核',
-  'completion:incomplete': '模型未能补全全部字段',
-  'completion:failed': '补全失败',
   'llm:outcome_unknown': '模型调用结果未知，已暂停，不会自动重试',
   'storage:io_error': '存储失败，旧数据未改动，请重试',
   'prompt:schema_changed': '词典结构已升级到 v5，旧任务已暂停，请重新提交',
@@ -85,6 +81,7 @@ const GENERATION_TEXT: Record<string, string> = {
   'llm:unavailable': 'LLM 服务不可用',
   'llm:schema_contract': 'LLM 返回格式不符合约定',
   'llm:refused': 'LLM 拒绝生成',
+  'generation:unavailable': '生成服务不可用（未配置模型或技能），请检查模型设置后重试',
 };
 
 const generationText = (code: string): string =>

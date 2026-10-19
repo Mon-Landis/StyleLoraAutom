@@ -23,7 +23,6 @@ vi.mock('../src/api/promptGroups', async (orig) => ({
 const ref: GroupRef = { scope: 'global', project_token: null, group_id: 'g1' };
 const entry = (over: Partial<Entry> = {}): Entry => ({
   entry_id: 'e1', nl: 'a cat', disable: false, aspect: null, preview: null,
-  completion: { state: 'complete', missing: [], task_id: null, error_code: null },
   variants: {},
   ...over,
 });
@@ -249,12 +248,11 @@ describe('EntryDialog partial PATCH', () => {
   });
 });
 
-describe('GroupSettingsDialog (F31: auto_complete 开关已隐藏)', () => {
-  it('has no auto-complete toggle and patches only nsfw', async () => {
+describe('GroupSettingsDialog', () => {
+  it('has no auto-complete section and patches only nsfw', async () => {
     vi.mocked(patchGroup).mockResolvedValue({ data: {} as never, etag: '"2"' });
     render(<GroupSettingsDialog gref={ref} nsfw={false} name="G" etag={'"1"'} onClose={vi.fn()} onDone={vi.fn()} />);
-    expect(screen.queryByLabelText(/自动补齐缺失字段/)).toBeNull();
-    expect(screen.getByText(/没有可自动补齐的基础字段/)).toBeTruthy();
+    expect(screen.queryByText(/自动补齐/)).toBeNull();
     const save = screen.getByRole('button', { name: '保存' }) as HTMLButtonElement;
     expect(save.disabled).toBe(true);
     fireEvent.click(screen.getByLabelText(/这是 nsfw 词典/));

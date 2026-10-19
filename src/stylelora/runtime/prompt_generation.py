@@ -8,13 +8,23 @@ from stylelora.prompts.prompt_normalize import NORMALIZATION_VERSION, normalize_
 from stylelora.prompts.dictionaries import digest
 from stylelora.prompts.types import PromptError, plain
 from stylelora.prompts.validation import require, strict_loads
-from .prompt_completion import (PromptCompletion, content_safety, current_schema,
-                                gate_recovery, response_schema as completion_schema)
+from stylelora.vision.executor import SkillStore
 from .prompt_groups import service
 from .tasks import TaskDTO, ResourceRef, ProjectRef, ProgressDTO
 
 BRIEF_LIMIT = 4000
 CAS_RETRY_LIMIT = 8
+SKILL_PATH = 'skills/nai-prompt-generator/SKILL.md'
+
+SFW_DECLARATION = ('SFW ONLY. This request explicitly excludes any NSFW content: '
+                   'no nudity, no sexual content, no suggestive poses or fetish elements.')
+NSFW_DECLARATION = ('NSFW REQUESTED. This group is marked nsfw; explicit adult content '
+                    'is part of the requirement and must be written plainly when the input calls for it.')
+
+
+def content_safety(nsfw: bool) -> str:
+    """Explicit content declaration sent with every prompt-generation call (U19)."""
+    return NSFW_DECLARATION if nsfw else SFW_DECLARATION
 
 
 @dataclass(frozen=True)
@@ -28,23 +38,52 @@ class GenerationTaskDTO(TaskDTO):
 
 
 def response_schema(count):
-    schema = completion_schema()
-    groups = schema['properties']['groups']
-    groups.update(minItems=1, maxItems=1)
-    rows = groups['items']['properties']['prompts']
-    rows['maxItems'] = count
-    entry = rows['items']
-    del entry['properties']['index']
-    entry['required'].remove('index')
-    entry['properties']['disable'] = {'const': False}
+    entry = {'type': 'object', 'properties': {
+        'nl': {'type': 'string'}, 'disable': {'const': False},
+        'aspect': {'enum': ['landscape', 'portrait', 'square']}},
+        'required': ['nl', 'disable'], 'additionalProperties': False}
+    group = {'type': 'object', 'properties': {'name': {'type': 'string'},
+             'prompts': {'type': 'array', 'minItems': 1, 'maxItems': count, 'items': entry}},
+             'required': ['name', 'prompts'], 'additionalProperties': False}
+    issue = {'type': 'object', 'properties': {'group': {'type': 'string'}, 'index': {'type': 'integer'},
+             'code': {'type': 'string'}, 'detail': {'type': 'string'}},
+             'required': ['group', 'index', 'code', 'detail'], 'additionalProperties': False}
     # LlmService validates the whole reply. Keep malformed rows available for
     # per-entry validation instead of losing valid siblings at that boundary.
-    rows['items'] = {'anyOf': [entry, True]}
-    return schema
+    group['properties']['prompts']['items'] = {'anyOf': [entry, True]}
+    return {'type': 'object', 'properties': {'status': {'enum': ['ok', 'partial', 'refused_nsfw', 'invalid_input']},
+            'groups': {'type': 'array', 'items': group}, 'issues': {'type': 'array', 'items': issue}, 'reason': {'type': 'string'}},
+            'required': ['status', 'groups', 'issues'], 'additionalProperties': False}
+
+
+CONTENT_SCHEMA_VERSION = 5
+
+
+def current_schema(record):
+    return record.get('content_schema_version') == CONTENT_SCHEMA_VERSION
+
+
+def gate_recovery(record):
+    if not current_schema(record) and record['status'] not in ('done', 'failed', 'canceled'):
+        record['status'] = 'paused'
+        record['error_code'] = 'prompt:schema_changed'
+        record.pop('interrupted_status', None)
+        return True
+    return False
+
+
+def persisted_record(record):
+    """True for a generation record this service can own.
+
+    Legacy completion records persisted under the same product root carry no
+    batches; they are ignored (unsupported) instead of failing startup.
+    """
+    return (isinstance(record.get('ref'), dict) and isinstance(record.get('batches'), list)
+            and isinstance(record.get('status'), str))
 
 
 def unpack_result(value, name, count):
-    require(isinstance(value, dict) and value.get('status') in ('ok', 'partial'), 'generation:incomplete')
+    require(isinstance(value, dict) and value.get('status') in ('ok','partial'), 'generation:incomplete')
     groups = value.get('groups')
     require(isinstance(groups, list) and len(groups) == 1, 'generation:incomplete')
     group = groups[0]
@@ -65,7 +104,7 @@ def unpack_result(value, name, count):
     return entries, issues
 
 
-class PromptGeneration(PromptCompletion):
+class PromptGeneration:
     def __init__(self, rt, *, skills=None, skill_hash=None):
         self.rt, self.groups = rt, service(rt)
         self.root = rt.product.root/'prompt-generations'
@@ -74,6 +113,10 @@ class PromptGeneration(PromptCompletion):
         for path in self.root.glob('*.json'):
             try:
                 record = strict_loads(path.read_bytes())
+                if not isinstance(record, dict) or not isinstance(record.get('id'), str):
+                    continue
+                if not persisted_record(record):
+                    continue
                 if gate_recovery(record):
                     self.save(record)
                 elif record['status'] in ('pending', 'running'):
@@ -85,6 +128,27 @@ class PromptGeneration(PromptCompletion):
                 record['task_id'] = self.register(record)
             except (OSError, ValueError, KeyError):
                 continue
+
+    def _write(self, path, record):
+        from stylelora.prompts.dictionaries import _write
+        return _write(path, record)
+
+    def save(self, record):
+        record['version'] = record.get('version', 0)+1
+        self._write(self.root/(record['id']+'.json'), record)
+
+    def skill(self):
+        try:
+            if self.skills is None:
+                import hashlib
+                from pathlib import Path
+                path = Path(__file__).resolve().parents[3]/SKILL_PATH
+                text = path.read_text(encoding='utf-8')
+                self.skills = SkillStore((text,))
+                self.skill_hash = hashlib.sha256(text.encode()).hexdigest()
+            return self.skills.get(self.skill_hash)
+        except Exception:
+            raise PromptError('generation:unavailable') from None
 
     def register(self, record):
         project = ProjectRef(record['ref']['project_token'], '提示词组') if record['ref']['scope'] == 'project' else None
@@ -106,7 +170,7 @@ class PromptGeneration(PromptCompletion):
                 require(record['digest'] == signature, 'dictionary:request_key_conflict')
                 return plain(await self.rt.tasks.get(self.register(record)))
         group = self.groups.store.load(ref)
-        require(self.rt.llm is not None, 'completion:unavailable')
+        require(self.rt.llm is not None, 'generation:unavailable')
         system = self.skill()
         identity = str(uuid4())
         record = dict(id=identity, ref=plain(ref), brief=brief, requested=count, subject_mix=subject_mix,
@@ -183,7 +247,7 @@ class PromptGeneration(PromptCompletion):
             require(current_schema(record), 'prompt:schema_changed')
             record['status'] = 'running'; self.save(record)
             binding = await self.rt.llm.resolve_role('prompt_nsfw' if record['nsfw'] else 'prompt')
-            require(binding is not None, 'completion:unavailable')
+            require(binding is not None, 'generation:unavailable')
             await asyncio.gather(*(batch_call(batch, binding) for batch in record['batches']))
             if record['status'] == 'running':
                 record['status'] = 'failed' if any(r['error_code'] for r in record['reports']) else 'done'
@@ -243,6 +307,27 @@ class PromptGeneration(PromptCompletion):
             cancelable=record['status'] in ('pending', 'running'), version=str(record['version']),
             reason_code=record['error_code'], requested=record['requested'], generated=generated, failed=failed,
             batches=batches, issues=tuple(i for r in reports.values() for i in r['issues']))
+
+    async def stop(self, identity, request):
+        from .tasks import StopReceipt
+        record = self.records[identity]
+        no_op = record['status'] not in ('pending', 'running')
+        if not no_op:
+            record['status'] = 'canceled' if request.reason == 'user' else 'paused'
+            self.cancel[identity].cancel()
+            task = self.active.get(identity)
+            if task is not None:
+                task.cancel()
+            self.save(record)
+        return StopReceipt(identity, record['status'], not no_op, no_op, str(record['version']))
+
+    async def wait(self, identity):
+        task = self.active.get(identity)
+        if task:
+            await asyncio.gather(task, return_exceptions=True)
+
+    def worker_exited(self, identity):
+        return identity not in self.active or self.active[identity].done()
 
 
 def generation_service(rt):

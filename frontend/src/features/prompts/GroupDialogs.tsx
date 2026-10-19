@@ -15,7 +15,6 @@ export function GroupCreateDialog({ projectId, onClose, onDone }: {
   const [name, setName] = useState('');
   const [choice, setChoice] = useState<Scope | null>(null);
   const [nsfw, setNsfw] = useState(false);
-  // F31 §7.3：自动补齐开关已隐藏，创建时不再携带 auto_complete，由后端按偏好继承。
   const scope = defaultScope(projectId, choice);
   const blocked = scopeBlocked(scope, projectId);
   const s = useSubmit(

@@ -57,7 +57,7 @@ def decode_group_txt(data):
                 require(metadata.get('normalization_version') == 'nai-storage-v1')
             Group(metadata.get('group_id', str(uuid4())), metadata.get('name', '导入提示词组'),
                   metadata.get('scope', 'global'), metadata.get('nsfw', False),
-                  category=metadata.get('category', 'full_content'), auto_complete=metadata.get('auto_complete', True))
+                  category=metadata.get('category', 'full_content'))
         except PromptError as exc:
             raise PromptError(exc.code, issues=tuple(replace(i, row=2) for i in
                               exc.issues or (Issue(exc.code),))) from None

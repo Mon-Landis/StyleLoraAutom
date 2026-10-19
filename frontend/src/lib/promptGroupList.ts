@@ -29,26 +29,13 @@ export function refOf(g: Pick<GroupSummary, 'scope' | 'dictionary_id' | 'project
 export const sameRef = (a: GroupRef | null, b: GroupRef | null): boolean =>
   !!a && !!b && a.scope === b.scope && a.group_id === b.group_id && (a.project_token ?? null) === (b.project_token ?? null);
 
-export const COMPLETION_LABEL: Record<string, string> = {
-  pending: '待补全', queued: '排队中', running: '补全中', complete: '', failed: '补全失败，可重试',
-  paused: '补全已暂停', canceled: '补全已取消', stale: '补全结果已过期',
-};
-export const FIELD_LABEL: Record<string, string> = { nl: '提示词' };
-
 export interface EntryBlock {
   /** v5：条目只显示 nl 原文本（不 trim、不改写）。 */
   nl: string;
-  statusLabel: string;
-  missingLabels: string[];
 }
 
 export function entryBlock(e: Entry): EntryBlock {
-  const state = e.completion?.state ?? 'complete';
-  return {
-    nl: e.nl ?? '',
-    statusLabel: COMPLETION_LABEL[state] ?? state,
-    missingLabels: (e.completion?.missing ?? []).map((m) => FIELD_LABEL[m] ?? m),
-  };
+  return { nl: e.nl ?? '' };
 }
 
 /** 本地持久化的旧视图值（default / nl）统一映射为 prompt；未知值回退 prompt。 */

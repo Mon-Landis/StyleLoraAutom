@@ -42,6 +42,17 @@ class TaskApiTests(unittest.TestCase):
         finally:
             self.client.portal.call(adapter.exited.set)
 
+    def test_prompt_generation_unavailable_maps_to_503(self):
+        created = self.client.post('/api/prompt-groups', json={'name': 'Gen'},
+                                   headers={'Idempotency-Key': str(uuid4()), 'If-None-Match': '*'})
+        self.assertEqual(created.status_code, 201, created.text)
+        ref = {'scope': 'global', 'project_token': None, 'group_id': created.json()['dictionary_id']}
+        response = self.client.post('/api/tasks', json={'type': 'prompt_generation', 'ref': ref,
+                                                        'brief': 'cats', 'count': 1},
+                                    headers={'Idempotency-Key': str(uuid4())})
+        self.assertEqual(response.status_code, 503, response.text)
+        self.assertEqual(response.json()['error']['code'], 'generation:unavailable')
+
     def test_T26_T30_settings_api_CAS_and_validation(self):
         value = self.client.get('/api/settings/resources').json()
         self.assertEqual(value['network']['token_default'], -1)

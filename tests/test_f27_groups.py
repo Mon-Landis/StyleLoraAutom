@@ -47,8 +47,7 @@ class GroupsTests(unittest.TestCase):
     def test_T01_content_and_missing(self):
         self.error('schema:invalid', lambda: validate_entry({'tag': [], 'nl': ' '}))
         entry = validate_entry({'nl': 'A cat.'})
-        self.assertEqual(entry.completion.state, 'complete')
-        self.assertEqual(entry.completion.missing, ())
+        self.assertFalse(hasattr(entry, 'completion'))
         for field in ('tag', 'expand_nl'):
             self.error('schema:invalid', lambda: validate_entry({field: 'A cat.'}))
 
@@ -65,7 +64,8 @@ class GroupsTests(unittest.TestCase):
         first = self.store.load(self.ref); second = self.store.load(self.ref)
         self.assertEqual(first, second)
         self.assertEqual(first.revision, 8); self.assertTrue(first.nsfw)
-        self.assertEqual(first.entries[0].nl, 'cat\n\nSitting.')
+        self.assertEqual(first.entries[0].nl, 'Sitting.')
+        self.assertEqual(dict(first.entries[0].variants), {'tag': 'cat', 'expand_nl': 'Sitting.'})
         self.assertFalse(hasattr(first.entries[0], 'expand_nl'))
         self.assertEqual(len(list(self.store.path(self.ref).parent.glob('*.bak'))), 1)
         old = load_dictionary(self.ref.group_id, root=self.root.parent)
@@ -238,7 +238,7 @@ class GroupsTests(unittest.TestCase):
         for mask in range(1,8):
             raw = {k:v for bit,(k,v) in enumerate(zip(keys,values)) if mask & (1<<bit)}
             if mask == 4:
-                self.assertEqual(validate_entry(raw).completion.missing, ())
+                self.assertEqual(validate_entry(raw).nl, 'A cat sits.')
             else:
                 self.error('schema:invalid', lambda: validate_entry(raw))
 
@@ -291,7 +291,9 @@ class GroupsTests(unittest.TestCase):
     def test_nai_normalization_and_row_failure(self):
         preview = self.preview([{'tag':['{kitty}'],'nl':'A kitty.'},
                                 {'tag':['{broken']}], source_format='nai')
-        self.assertEqual(preview['entries'][0]['nl'],'1.05::kitty::\n\nA kitty.')
+        # tag no longer merges into nl; it becomes the "tag" variant instead.
+        self.assertEqual(preview['entries'][0]['nl'],'A kitty.')
+        self.assertEqual(preview['entries'][0]['variants'],{'tag':'1.05::kitty::'})
         self.assertEqual(preview['valid_count'],1); self.assertEqual(preview['skipped_count'],1)
         self.assertTrue(preview['warnings'])
         self.assertEqual(preview['issues'][0]['row'], 2)

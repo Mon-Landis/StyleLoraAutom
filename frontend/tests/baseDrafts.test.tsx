@@ -16,7 +16,6 @@ import { useVariantDrafts } from '../src/state/variantDrafts';
 const ref: GroupRef = { scope: 'global', project_token: null, group_id: 'g1' };
 const entry = (over: Partial<Entry> = {}): Entry => ({
   entry_id: 'e1', nl: 'a cat', disable: false, aspect: null, preview: null,
-  completion: { state: 'complete', missing: [], task_id: null, error_code: null },
   variants: {},
   ...over,
 });
@@ -85,7 +84,7 @@ describe('F3 基础字段草稿参与离开 flush', () => {
   it('a failed base-field save blocks leaving, publishes nothing, and keeps the form and touched marks', async () => {
     const calls = installFetch((c) => {
       if (c.method === 'PATCH') return err(500, 'storage:io_error');
-      return json({ revision: 1, auto_complete: true }, 200, '1');
+      return json({ revision: 1 }, 200, '1');
     });
     const onClose = vi.fn();
     const e = entry({ generated: { nl: true, variants: {} } });
@@ -103,7 +102,7 @@ describe('F3 基础字段草稿参与离开 flush', () => {
   });
 
   it('untouched forms are not dirty and issue no PATCH on leave', async () => {
-    const calls = installFetch(() => json({ revision: 1, auto_complete: false }, 200, '1'));
+    const calls = installFetch(() => json({ revision: 1 }, 200, '1'));
     render(<EntryDialog mode="edit" gref={ref} etag={'"1"'} entry={entry()} onClose={vi.fn()} onSaved={vi.fn()} />);
     expect(hasAnyBaseDrafts()).toBe(false);
     await createLeaveCoordinator(apiLeaveDeps(new QueryClient())).leave(ref);
@@ -191,7 +190,7 @@ describe('F6 412 刷新 ETag 并允许重试', () => {
       if (c.method === 'PATCH') return err(412, 'dictionary:revision_conflict');
       if (c.url.includes('/export')) return json({ nl: 'someone else' });
       if (c.method === 'POST') return json({ task_id: 't', status: 'done' }, 202);
-      return json({ revision: 7, auto_complete: true }, 200, '7');
+      return json({ revision: 7 }, 200, '7');
     });
     render(<EntryDialog mode="edit" gref={ref} etag={'"1"'} entry={entry()} onClose={vi.fn()} onSaved={vi.fn()} />);
     fireEvent.change(nlBox(), { target: { value: 'mine' } });
@@ -213,7 +212,7 @@ describe('F6 412 刷新 ETag 并允许重试', () => {
       }
       if (c.url.includes('/export')) return json({ nl: 'a cat' });
       if (c.method === 'POST') return json({ task_id: 't', status: 'done' }, 202);
-      return json({ revision: 7, auto_complete: true }, 200, '7');
+      return json({ revision: 7 }, 200, '7');
     });
     render(<EntryDialog mode="edit" gref={ref} etag={'"1"'} entry={entry()} onClose={vi.fn()} onSaved={vi.fn()} />);
     fireEvent.change(nlBox(), { target: { value: 'mine' } });

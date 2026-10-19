@@ -1,7 +1,7 @@
 import unittest
 
-from stylelora.runtime.prompt_completion import (NSFW_DECLARATION, SFW_DECLARATION,
-                                                 content_safety)
+from stylelora.runtime.prompt_generation import (NSFW_DECLARATION, SFW_DECLARATION,
+                                                content_safety)
 
 
 class ContentSafetyTests(unittest.TestCase):

@@ -4,7 +4,6 @@ import type { NsfwDisplayMode, SafetySettings, SessionSafetyState } from './prom
 
 /** ProductSettings（GET /api/settings）。 */
 export interface SettingsView extends Partial<SafetySettings> {
-  prompt_auto_complete_default?: boolean;
   version?: string;
   revision?: number;
   /** 后端进程内会话确认（GET /settings 随带，docs/frontend-contract-f27.md）。 */
@@ -17,8 +16,6 @@ export const getSettings = () =>
 export interface SettingsPatch {
   nsfw_enabled?: boolean;
   nsfw_display_mode?: NsfwDisplayMode;
-  /** F30：新建提示词组的 auto_complete 默认值；不改变已有组。 */
-  prompt_auto_complete_default?: boolean;
 }
 export const patchSettings = (body: SettingsPatch, etag: string, key = uuid()) =>
   patch<SettingsView>('/api/settings', body, { ifMatch: etag, idempotencyKey: key }).then((r) => ({ data: r.data, etag: r.etag ?? (r.data.version ?? null) }));

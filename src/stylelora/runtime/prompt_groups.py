@@ -64,7 +64,6 @@ def apply_user_patch(entry, patch):
         generated[field] = False
         edits[field] += 1
     return replace(updated, preview=entry.preview, pending=entry.pending,
-                   completion=updated.completion if touched else entry.completion,
                    generated=GeneratedFields(**generated, variants=marks),
                    edit_versions=FieldVersions(**edits, variants=versions))
 
@@ -72,8 +71,7 @@ def apply_user_patch(entry, patch):
 class PromptGroups:
     def __init__(self, rt):
         self.rt = rt
-        self.store = GroupStore(rt.product.root, self.project,
-                                auto_complete_default=lambda: rt.product.get()['prompt_auto_complete_default'])
+        self.store = GroupStore(rt.product.root, self.project)
         self.exchange = GroupExchange(self.store, rt.clock)
         self.pages = {}
         self.revealed_this_run = False
@@ -88,7 +86,7 @@ class PromptGroups:
         return GroupRef(scope, params.get('project_token'), identity)
 
     def summary(self, group):
-        result = {key: getattr(group, key) for key in ('dictionary_id', 'name', 'kind', 'category', 'schema_version', 'scope', 'nsfw', 'revision', 'auto_complete')}
+        result = {key: getattr(group, key) for key in ('dictionary_id', 'name', 'kind', 'category', 'schema_version', 'scope', 'nsfw', 'revision')}
         result.update(entry_count=len(group.entries), version=str(group.revision),
                       project_token=self.project()[0] if group.scope == 'project' and self.project() else None)
         return result
@@ -135,7 +133,7 @@ class PromptGroups:
         return result
 
     def create(self, value, key):
-        require(isinstance(value, dict) and not set(value)-{'dictionary_id', 'name', 'kind', 'category', 'nsfw', 'scope', 'project_token', 'auto_complete'})
+        require(isinstance(value, dict) and not set(value)-{'dictionary_id', 'name', 'kind', 'category', 'nsfw', 'scope', 'project_token'})
         current = self.project()
         scope = value.get('scope', 'project' if current else 'global')
         # A deterministic identity makes retries across process restarts address the receipt.
@@ -144,10 +142,8 @@ class PromptGroups:
         ref = GroupRef(scope, value.get('project_token', current[0] if current and scope == 'project' else None), identity)
         def change(old):
             require(old is None, 'group:id_conflict')
-            default = value['auto_complete'] if 'auto_complete' in value else self.store.auto_complete_default()
             group = Group(identity, value.get('name', ''), scope, value.get('nsfw', False),
-                          kind=value.get('kind', 'prompts'), category=value.get('category', 'full_content'),
-                          auto_complete=default)
+                          kind=value.get('kind', 'prompts'), category=value.get('category', 'full_content'))
             return group, self.summary(group)
         return self.store.mutate(ref, 0, key, 'create', value, change)
 
@@ -161,7 +157,7 @@ class PromptGroups:
         def change(group):
             require(group is not None, 'dictionary:not_found')
             if entry_id is None and action == 'patch':
-                require(isinstance(patch, dict) and not set(patch)-{'name', 'nsfw', 'auto_complete'})
+                require(isinstance(patch, dict) and not set(patch)-{'name', 'nsfw'})
                 updated = replace(group, **patch, revision=revision+1)
                 return updated, self.summary(updated)
             entries = list(group.entries)

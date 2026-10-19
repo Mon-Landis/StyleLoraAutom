@@ -2,19 +2,16 @@ import { QueryClient } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setToken } from '../src/api/client';
 import { ApiError } from '../src/api/errors';
-import { enqueueCompletion, refKey } from '../src/api/promptGroups';
-import type { GroupRef, TaskView } from '../src/api/promptGroupTypes';
-import { patchSettings } from '../src/api/safety';
+import { refKey } from '../src/api/promptGroups';
+import type { GroupRef } from '../src/api/promptGroupTypes';
 import { apiLeaveDeps, createLeaveCoordinator, flushVariantDrafts, VariantConflictError, type LeaveDeps } from '../src/lib/autoLeave';
 import { pendingWriteScopes, runGroupWrite } from '../src/lib/groupWriteQueue';
-import { summarizeCompletion, watchCompletion } from '../src/lib/completionWatch';
 import { hasNavGuards, registerNavGuard, runNavGuards } from '../src/lib/navGuard';
 import { useNotices } from '../src/state/notices';
 import { draftId, useVariantDrafts } from '../src/state/variantDrafts';
 
 const ref: GroupRef = { scope: 'global', project_token: null, group_id: 'g1' };
 const other: GroupRef = { scope: 'global', project_token: null, group_id: 'g2' };
-const task = (over: Partial<TaskView> = {}): TaskView => ({ task_id: 't1', status: 'pending', ...over });
 const apiErr = (status: number, code: string) =>
   new ApiError(status, { code, message: code, retryable: false, retryAction: 'none', outcome: null, details: null, requestId: null });
 
@@ -111,40 +108,6 @@ beforeEach(() => {
 });
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
-describe('enqueueCompletion request body', () => {
-  it('auto_leave never sends entry_ids (not even null) and carries trigger/base_revision/key', async () => {
-    const calls = installFetch(() => json(task({ status: 'done' }), 202));
-    await enqueueCompletion(ref, undefined, 7, 'key-1', 'auto_leave', { keepalive: true });
-    expect(calls[0].body).toEqual({ type: 'prompt_completion', ref, base_revision: 7, trigger: 'auto_leave' });
-    expect('entry_ids' in (calls[0].body as object)).toBe(false);
-    expect(calls[0].headers['Idempotency-Key']).toBe('key-1');
-    expect(calls[0].keepalive).toBe(true);
-    // 即使误传 ids，auto_leave 也不带
-    await enqueueCompletion(ref, ['e1'], 7, 'key-2', 'auto_leave');
-    expect('entry_ids' in (calls[1].body as object)).toBe(false);
-  });
-
-  it('manual keeps entry_ids and defaults trigger to manual', async () => {
-    const calls = installFetch(() => json(task(), 202));
-    await enqueueCompletion(ref, ['e1'], 3);
-    expect(calls[0].body).toEqual({ type: 'prompt_completion', ref, base_revision: 3, trigger: 'manual', entry_ids: ['e1'] });
-    await enqueueCompletion(ref, undefined, 3);
-    expect('entry_ids' in (calls[1].body as object)).toBe(false);
-  });
-});
-
-describe('patchSettings', () => {
-  it('sends prompt_auto_complete_default with If-Match', async () => {
-    const calls = installFetch(() => json({ prompt_auto_complete_default: false }, 200, '4'));
-    const r = await patchSettings({ prompt_auto_complete_default: false }, '3');
-    expect(calls[0].method).toBe('PATCH');
-    expect(calls[0].url).toBe('/api/settings');
-    expect(calls[0].body).toEqual({ prompt_auto_complete_default: false });
-    expect(calls[0].headers['If-Match']).toBe('"3"');
-    expect(r.data.prompt_auto_complete_default).toBe(false);
-  });
-});
-
 describe('flushVariantDrafts', () => {
   const seed = (r: GroupRef, entryId: string, key: string, value: string) =>
     useVariantDrafts.getState().set(draftId(refKey(r), entryId, key), value);
@@ -202,40 +165,6 @@ describe('flushVariantDrafts', () => {
     const calls = installFetch(() => json({}));
     await flushVariantDrafts(ref);
     expect(calls).toHaveLength(0);
-  });
-});
-
-
-describe('completion result hints', () => {
-  it('summarizes applied / discarded / failed fields', () => {
-    const s = summarizeCompletion({
-      ...task({ status: 'done' }),
-      reports: [
-        { entry_id: 'a', applied_fields: ['nl', 'nl'], discarded_fields: ['nl'] },
-        { entry_id: 'b', error_code: 'completion:incomplete', applied_fields: [], discarded_fields: [] },
-      ],
-    }, '自动补齐');
-    expect(s).toMatchObject({ applied: 2, discarded: 1, failed: 1, tone: 'warning' });
-    expect(s.text).toContain('写入 2 个字段');
-    expect(s.text).toContain('1 个字段');
-  });
-
-  it('paused tasks are reported as not auto-retried', () => {
-    const s = summarizeCompletion({ ...task({ status: 'paused' }), reports: [] }, '自动补齐');
-    expect(s.text).toContain('不会自动重试');
-    expect(s.tone).toBe('warning');
-  });
-
-  it('watchCompletion polls until terminal and settles once', async () => {
-    vi.useFakeTimers();
-    let n = 0;
-    installFetch(() => json({ task_id: 't1', status: ++n < 3 ? 'running' : 'done', reports: [{ entry_id: 'a', applied_fields: ['nl'], discarded_fields: [] }] }));
-    const onSettled = vi.fn();
-    watchCompletion('t1', { label: 'x', onSettled, intervalMs: 10 });
-    await vi.advanceTimersByTimeAsync(200);
-    expect(onSettled).toHaveBeenCalledTimes(1);
-    expect(onSettled.mock.calls[0][1]).toMatchObject({ applied: 1, tone: 'success' });
-    expect(n).toBe(3);
   });
 });
 

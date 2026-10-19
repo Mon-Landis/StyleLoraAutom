@@ -114,19 +114,6 @@ class GroupRef:
 
 
 @dataclass(frozen=True)
-class CompletionState:
-    state: str = 'complete'
-    missing: tuple = ()
-    task_id: str | None = None
-    error_code: str | None = None
-
-    def __post_init__(self):
-        _check(self.state in ('pending', 'queued', 'running', 'complete', 'failed', 'paused', 'canceled'), 'completion.state')
-        _check(isinstance(self.missing, (tuple, list)) and all(k == 'nl' for k in self.missing), 'completion.missing')
-        object.__setattr__(self, 'missing', tuple(self.missing))
-
-
-@dataclass(frozen=True)
 class PreviewRef:
     asset_revision: str
     sha256: str
@@ -148,7 +135,6 @@ class Entry:
     disable: bool = False
     aspect: str | None = None
     preview: PreviewRef | None = None
-    completion: CompletionState = field(default_factory=CompletionState)
     variants: Mapping[str, str] = field(default_factory=dict)
     generated: GeneratedFields = field(default_factory=GeneratedFields)
     pending: Mapping[BaseField, PendingField] = field(default_factory=dict)
@@ -160,7 +146,6 @@ class Entry:
         _check(type(self.disable) is bool, 'disable')
         _check(self.aspect in (None, 'landscape', 'portrait', 'square'), 'aspect')
         _check(self.preview is None or isinstance(self.preview, PreviewRef), 'preview')
-        object.__setattr__(self, 'completion', _state(CompletionState, self.completion, 'completion'))
         object.__setattr__(self, 'variants', _variants(self.variants))
         object.__setattr__(self, 'generated', _state(GeneratedFields, self.generated, 'generated'))
         object.__setattr__(self, 'edit_versions', _state(FieldVersions, self.edit_versions, 'edit_versions'))
@@ -227,7 +212,6 @@ class Group:
     kind: str = 'prompts'
     category: str = 'full_content'
     _operations: Mapping = field(default_factory=dict, repr=False)
-    auto_complete: bool = True
     prompt_format: Literal['nai'] = 'nai'
     normalization_version: Literal['nai-storage-v1'] = 'nai-storage-v1'
 
@@ -239,7 +223,6 @@ class Group:
         require(type(self.schema_version) is int and self.schema_version == 5 and self.kind == 'prompts' and self.category == 'full_content')
         _check(self.prompt_format == 'nai', 'prompt_format')
         _check(self.normalization_version == 'nai-storage-v1', 'normalization_version')
-        _check(type(self.auto_complete) is bool, 'auto_complete')
         _check(isinstance(self.entries, (tuple, list)), 'entries')
         _check(isinstance(self._operations, Mapping), '_operations')
         require(all(isinstance(e, Entry) for e in self.entries))
@@ -249,22 +232,46 @@ class Group:
         object.__setattr__(self, '_operations', immutable(self._operations))
 
 
+RETIRED_GROUP_FIELDS = frozenset({'auto_complete'})
+
+
+def _retired_completion(value) -> None:
+    """Shape-check a legacy completion blob before dropping it (F31)."""
+    _check(isinstance(value, Mapping), 'completion')
+    state = value.get('state', 'complete')
+    _check(state in ('pending', 'queued', 'running', 'complete', 'failed', 'paused', 'canceled'),
+           'completion.state')
+    missing = value.get('missing', ())
+    _check(isinstance(missing, (tuple, list)) and all(k == 'nl' for k in missing), 'completion.missing')
+
+
+# Base-field completion locks belonged to the retired completion service; nothing
+# clears them anymore, so persisted rows must be decoded with an empty map.
+RETIRED_ENTRY_LOCKS = frozenset({'pending'})
+
+
 def decode_group(raw: dict) -> Group:
     require(isinstance(raw, dict))
     require(type(raw.get('schema_version')) is int and raw['schema_version'] == 5, 'newer_version')
+    # Fields retired in F31 may still be present in old data; ignore them.
+    raw = {k: v for k, v in raw.items() if k not in RETIRED_GROUP_FIELDS}
     require(set(raw) <= set(Group.__dataclass_fields__))
     for key in ('dictionary_id', 'name'):
         _check(key in raw, key)
     _check(isinstance(raw.get('entries', []), (list, tuple)), 'entries')
     entries = []
     for row in raw.get('entries', []):
-        require(isinstance(row, dict) and set(row) <= set(Entry.__dataclass_fields__))
+        require(isinstance(row, dict) and set(row) <= set(Entry.__dataclass_fields__) | {'completion'})
         _check('entry_id' in row, 'entry_id')
         entry = validate_entry({k: v for k, v in row.items() if k in CONTENT | {'entry_id'}})
         preview = _state(PreviewRef, row['preview'], 'preview') if row.get('preview') is not None else None
-        completion = _state(CompletionState, row.get('completion', {}), 'completion')
-        entries.append(replace(entry, preview=preview, completion=completion,
-                               **{k: row[k] for k in ('generated', 'pending', 'edit_versions') if k in row}))
+        # Retired completion state is tolerated (shape-checked) and dropped (F31).
+        if 'completion' in row:
+            _retired_completion(row['completion'])
+        entries.append(replace(entry, preview=preview,
+                               **{k: v for k, v in row.items()
+                                  if k in ('generated', 'pending', 'edit_versions')
+                                  and k not in RETIRED_ENTRY_LOCKS}))
     return Group(**(raw | {'entries': tuple(entries)}))
 
 
@@ -274,10 +281,10 @@ def migrate_v2(raw):
     return migrate_group(raw)
 
 
-def migrate_v3(raw, *, auto_complete_default=True):
+def migrate_v3(raw):
     from .group_legacy import legacy_version
     require(legacy_version(raw) == 3)
-    return migrate_group(raw, auto_complete_default=auto_complete_default)
+    return migrate_group(raw)
 
 
 def migrate_v4(raw: dict) -> Group:
@@ -286,12 +293,11 @@ def migrate_v4(raw: dict) -> Group:
     return migrate_group(raw)
 
 
-def migrate_group(raw: dict, *, auto_complete_default: bool = True) -> Group:
+def migrate_group(raw: dict, *, issues: list | None = None) -> Group:
     from .group_legacy import legacy_version, adapt_legacy_group
-    _check(type(auto_complete_default) is bool, 'auto_complete')
     if legacy_version(raw) == 5:
         return decode_group(raw)
-    return decode_group(adapt_legacy_group(raw, auto_complete_default=auto_complete_default))
+    return decode_group(adapt_legacy_group(raw, issues=issues))
 
 
 @dataclass(frozen=True)

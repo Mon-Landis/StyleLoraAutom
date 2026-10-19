@@ -33,8 +33,7 @@ class ImagePackTests(unittest.TestCase):
         asset = prepare_preview(encode_png('old metadata'), self.entries[1].entry_id)
         preview = self.store.publish(asset, self.ref, self.entries[1].entry_id)
         self.entries = (self.entries[0], replace(self.entries[1], preview=preview))
-        group = Group(self.ref.group_id, '图像包', 'global', True, entries=self.entries,
-                      auto_complete=False)
+        group = Group(self.ref.group_id, '图像包', 'global', True, entries=self.entries)
         self.store.save(self.ref, group, 0, 'setup')
 
     def pack(self):
@@ -68,7 +67,7 @@ class ImagePackTests(unittest.TestCase):
         files = read_image_pack(packed)
         raw = json.loads(files['group.json'])
         self.assertEqual(len(files), 3)
-        self.assertFalse(raw['group_metadata']['auto_complete'])
+        self.assertNotIn('auto_complete', raw['group_metadata'])
         for entry in self.entries:
             spec = raw['preview_manifest'][entry.entry_id]
             png = files[spec['file']]

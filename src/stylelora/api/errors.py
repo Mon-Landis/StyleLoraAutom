@@ -18,7 +18,8 @@ def translate(exc):
     if isinstance(exc, PromptError):
         from stylelora.prompts.types import plain
         status = {'dictionary:revision_conflict': 412, 'project:closed': 409,
-                  'completion:stale': 409, 'completion:unavailable': 503,
+                  'task:type_unsupported': 422,
+                  'completion:stale': 409, 'generation:unavailable': 503,
                   'storage:io_error': 500, 'storage:corrupt_snapshot': 500,
                   'preview:expired': 410, 'image:too_large': 413, 'import:limit': 413,
                   'import:unsupported': 422, 'image:invalid': 422,

@@ -21,12 +21,7 @@ class ExchangeTests(unittest.TestCase):
     def setUp(self):
         self.temp = TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.default = False
-        self.calls = 0
-        def preference():
-            self.calls += 1
-            return self.default
-        self.store = GroupStore(Path(self.temp.name), auto_complete_default=preference)
+        self.store = GroupStore(Path(self.temp.name))
         self.exchange = GroupExchange(self.store, clock=lambda: 100)
         self.row = dict(nl='A forest.', disable=True,
                         variants={'多行': ' A\r\nB\rC\t"尾" ', 'literal': r'A\nB', 'empty': '', 'a.b': '雪'})
@@ -43,10 +38,9 @@ class ExchangeTests(unittest.TestCase):
         return self.store.load(GroupRef(**preview['ref']))
 
     def test_roundtrip_all_formats_and_copy_inherits(self):
-        preview = self.preview(metadata={'auto_complete': False})
+        preview = self.preview()
         self.commit(preview)
         ref = GroupRef(**preview['ref'])
-        self.default = True
         expected = content(self.load(preview).entries[0])
         for format in ('json', 'txt', 'zip', 'folder'):
             with self.subTest(format=format):
@@ -58,7 +52,7 @@ class ExchangeTests(unittest.TestCase):
                         archive.extractall(package)
                     data = package
                 copied = self.exchange.preview_import(data, {'format': format})
-                self.assertFalse(copied['metadata']['auto_complete'])
+                self.assertNotIn('auto_complete', copied['metadata'])
                 self.assertNotEqual(copied['ref'], preview['ref'])
                 self.commit(copied)
                 entry = self.load(copied).entries[0]
@@ -66,33 +60,27 @@ class ExchangeTests(unittest.TestCase):
                 self.assertEqual(entry.generated, GeneratedFields())
                 self.assertFalse(entry.pending)
                 self.assertEqual(entry.edit_versions, FieldVersions())
-        self.assertEqual(self.calls, 0)
 
     def test_default_frozen_and_confirm_replay(self):
         raw = json.dumps({'prompts': [self.row]}).encode()
         preview = self.exchange.preview_import(raw, request_key='preview')
-        self.default = True
         self.assertEqual(self.exchange.preview_import(raw, request_key='preview'), preview)
         result = self.commit(preview, 'commit')
         self.assertEqual(self.commit(preview, 'commit'), result)
-        self.assertFalse(self.load(preview).auto_complete)
-        self.assertEqual(self.calls, 1)
 
     def test_append_keeps_target_switch_and_variant_distinctions(self):
-        target = self.preview(metadata={'auto_complete': False})
+        target = self.preview()
         self.commit(target)
-        data = encode_group_txt({'auto_complete': True}, [validate_entry(self.row | {'variants': {'other': ''}})])
+        data = encode_group_txt({}, [validate_entry(self.row | {'variants': {'other': ''}})])
         preview = self.exchange.preview_import(data, {'format': 'txt', 'level': 'entries', 'ref': target['ref']})
         result = self.commit(preview)
         self.assertEqual(result['inserted'], 1)
-        self.assertFalse(self.load(target).auto_complete)
         self.assertEqual(len(self.load(target).entries), 2)
         preview = self.preview(rows=[self.row | {'variants': {'json': ''}}, {'nl': 'invalid', 'generated': {}}],
-                               metadata={'auto_complete': True}, level='entries', ref=target['ref'])
+                               level='entries', ref=target['ref'])
         self.assertEqual(preview['skipped_count'], 1)
         self.assertEqual(preview['issues'][0]['row'], 2)
         self.commit(preview)
-        self.assertFalse(self.load(target).auto_complete)
         self.assertEqual(len(self.load(target).entries), 3)
 
     def test_txt_escapes_bom_crlf_and_unicode(self):
@@ -132,20 +120,16 @@ class ExchangeTests(unittest.TestCase):
         preview = self.exchange.preview_import('forest, a quiet place\\nunder stars\n\n雪景'.encode(), {'format': 'txt'})
         self.assertEqual(preview['valid_count'], 2)
         self.assertTrue(preview['warnings'])
-        self.default = True
         self.commit(preview)
         group = self.load(preview)
-        self.assertFalse(group.auto_complete)
         self.assertTrue(all(not e.variants for e in group.entries))
         self.assertIn('\n', group.entries[0].nl)
-        self.default = False
         stream = io.BytesIO()
         with zipfile.ZipFile(stream, 'w') as archive:
             archive.writestr('group.json', json.dumps({'prompts': [self.row | {'entry_id': str(uuid4())}]}))
         preview = self.exchange.preview_import(stream.getvalue(), {'format': 'zip'})
-        self.default = True
         self.commit(preview)
-        self.assertFalse(self.load(preview).auto_complete)
+        self.assertNotIn('auto_complete', preview['metadata'])
 
     def test_internal_state_rejected_and_not_exported(self):
         for field in ('generated', 'pending', 'edit_versions', 'completion', 'preview', '_operations'):
@@ -196,7 +180,7 @@ class ExchangeApiTests(unittest.TestCase):
             rt = Runtime(Path(temp)/'product')
             with TestClient(create_app(rt), base_url='http://127.0.0.1:8000') as client:
                 client.headers['Authorization'] = 'Bearer '+rt.token
-                data = encode_group_txt({'auto_complete': False}, [validate_entry({'nl': 'Forest', 'variants': {'x': 'A\nB'}})])
+                data = encode_group_txt({}, [validate_entry({'nl': 'Forest', 'variants': {'x': 'A\nB'}})])
                 response = client.post('/api/prompt-imports/preview',
                                        files={'file': ('group.txt', data, 'text/plain')},
                                        data={'options': '{"format":"txt"}'}, headers={'Idempotency-Key': 'preview'})
@@ -219,5 +203,5 @@ class ExchangeApiTests(unittest.TestCase):
                 self.assertEqual(response.headers['content-type'], 'text/plain; charset=utf-8')
                 self.assertIn('.txt"', response.headers['content-disposition'])
                 decoded = decode_group_txt(response.content)
-                self.assertFalse(decoded['group_metadata']['auto_complete'])
+                self.assertNotIn('auto_complete', decoded['group_metadata'])
                 self.assertEqual(decoded['prompts'][0]['variants'], {'x': 'A\nB'})

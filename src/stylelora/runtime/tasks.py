@@ -142,9 +142,7 @@ class TaskRegistry:
             raise Failure(503, 'task:unavailable')
         current = replace(current, task_id=task_id, project=project, version=old.version if old else '0',
                           resources=current.resources or (resource,))
-        cleanup_error = (resource.kind == 'prompt_completion' and
-                         current.reason_code == 'storage:io_error' and
-                         current.recovery.reconciliation_required)
+        cleanup_error = current.reason_code == 'storage:io_error' and current.recovery.reconciliation_required
         if task_id in self.stopping:
             reason = self.stopping[task_id].reason
             current = replace(current, status='canceling', stop_reason=reason,

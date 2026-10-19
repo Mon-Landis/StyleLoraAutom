@@ -25,7 +25,7 @@ class StoreEditTests(unittest.TestCase):
                         variants={'key_name': 'blue_cat', 'empty': ''})
         self.raw = dict(schema_version=4, dictionary_id=self.ref.group_id, name='old',
                         scope='global', kind='prompts', revision=7, entries=[self.row],
-                        auto_complete=False, _operations={'old': {'digest': 'd', 'result': 7}})
+                        _operations={'old': {'digest': 'd', 'result': 7}})
 
     def write(self):
         _write(self.path, self.raw)
@@ -35,12 +35,13 @@ class StoreEditTests(unittest.TestCase):
         original = self.write()
         group = self.store.load(self.ref)
         self.assertEqual((group.schema_version, group.revision), (5, 8))
-        self.assertEqual(group.entries[0].nl, 'blue cat\n\nrepeat\n\nrepeat')
+        self.assertEqual(group.entries[0].nl, 'repeat')
         self.assertEqual(group.entries[0].variants['key_name'], 'blue cat')
+        self.assertEqual(group.entries[0].variants['tag'], 'blue cat')
+        self.assertEqual(group.entries[0].variants['expand_nl'], 'repeat')
         self.assertEqual(group._operations['migration:v5']['result']['warnings'][0]['code'],
                          'migration:possible_duplicate')
         self.assertIn('old', group._operations)
-        self.assertFalse(group.auto_complete)
         self.assertEqual(self.path.with_suffix('.v4.bak').read_bytes(), original)
         saved = self.path.read_bytes()
         with patch('stylelora.prompts.group_store._migration_backup', side_effect=AssertionError):
@@ -88,7 +89,7 @@ class StoreEditTests(unittest.TestCase):
         self.assertTrue(entry.generated.variants['key_name'])
         self.assertEqual((entry.edit_versions.nl, entry.edit_versions.variants['key_name']), (6, 4))
         self.assertEqual(dict(entry.pending), {})
-        self.assertEqual((entry.completion.state, entry.completion.missing), ('complete', ()))
+        self.assertFalse(hasattr(entry, 'completion'))
         self.assertNotIn('tag', plain(entry))
         self.assertNotIn('expand_nl', plain(entry))
 
@@ -133,8 +134,9 @@ class StoreEditTests(unittest.TestCase):
             self.store.mutate(self.ref, 1, 'stale', 'patch', {}, fail)
         self.assertEqual(caught.exception.code, 'dictionary:revision_conflict')
 
-    def test_long_merge_reports_identity_and_preserves_original(self):
-        self.row.update(expand_nl='x' * 9000, nl='y' * 9000)
+    def test_long_nl_reports_identity_and_preserves_original(self):
+        # tag/expand_nl no longer merge into nl, so only nl itself can overflow.
+        self.row.update(expand_nl='x' * 9000, nl='y' * 16001)
         original = self.write()
         with self.assertRaises(PromptError) as caught:
             self.store.load(self.ref)
@@ -149,7 +151,7 @@ class StoreEditTests(unittest.TestCase):
         original = self.path.read_bytes()
         legacy = load_dictionary(self.ref.group_id, root=self.root)
         self.assertEqual(legacy.entries[0].tags, ())
-        self.assertEqual(legacy.entries[0].natural_language, 'blue cat\n\nrepeat\n\nrepeat')
+        self.assertEqual(legacy.entries[0].natural_language, 'repeat')
         actions = [lambda: save_dictionary(legacy, expected_revision=8, request_key='s', root=self.root),
                    lambda: append_entries(self.ref.group_id, (), expected_revision=8, request_key='a', root=self.root),
                    lambda: delete_dictionary(self.ref.group_id, expected_revision=8, root=self.root)]

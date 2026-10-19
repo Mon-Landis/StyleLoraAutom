@@ -92,30 +92,50 @@ class EditApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 201, response.text)
         return response.json()
 
-    def test_preferences_group_switch_and_replay(self):
-        self.assertTrue(self.client.get('/api/settings').json()['prompt_auto_complete_default'])
+    def test_settings_replay_and_retired_auto_complete(self):
+        self.assertNotIn('prompt_auto_complete_default', self.client.get('/api/settings').json())
         first = self.create()
-        response = self.write('PATCH', '/api/settings', {'prompt_auto_complete_default': False}, key='pref')
+        response = self.write('PATCH', '/api/settings', {'nsfw_enabled': False}, key='pref')
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.headers['etag'], '"1"')
-        self.assertEqual(self.write('PATCH', '/api/settings', {'prompt_auto_complete_default': False}, key='pref').json(), response.json())
-        self.assertEqual(self.write('PATCH', '/api/settings', {'prompt_auto_complete_default': True}, key='pref').status_code, 409)
-        self.assertEqual(self.write('PATCH', '/api/settings', {'prompt_auto_complete_default': True}).status_code, 412)
-        second = self.create()
-        self.assertFalse(second['auto_complete'])
-        self.assertTrue(self.create(auto_complete=True)['auto_complete'])
+        self.assertEqual(self.write('PATCH', '/api/settings', {'nsfw_enabled': False}, key='pref').json(), response.json())
+        self.assertEqual(self.write('PATCH', '/api/settings', {'nsfw_enabled': True}, key='pref').status_code, 409)
+        self.assertEqual(self.write('PATCH', '/api/settings', {'nsfw_enabled': True}).status_code, 412)
+        self.assertNotIn('prompt_auto_complete_default', response.json())
         path = '/api/prompt-groups/'+first['dictionary_id']
-        self.assertTrue(self.client.get(path).json()['auto_complete'])
-        response = self.write('PATCH', path, {'auto_complete': False}, 1)
+        # auto_complete is no longer part of the group API contract.
+        self.assertNotIn('auto_complete', self.client.get(path).json())
+        self.assertTrue(all('auto_complete' not in g for g in self.client.get('/api/prompt-groups').json()['items']))
+        self.assertEqual(self.write('PATCH', path, {'auto_complete': False}, 1).status_code, 422)
+        self.assertEqual(self.write('POST', '/api/prompt-groups', {'name': 'Bad', 'auto_complete': True}).status_code, 422)
+        self.assertEqual(self.write('PATCH', '/api/settings', {'prompt_auto_complete_default': False}, 1).status_code, 422)
+        self.assertEqual(self.write('PATCH', path, {'name': 'Renamed'}, 1).status_code, 200)
+
+    def test_upgrade_drops_retired_setting_from_existing_config_and_receipt(self):
+        import json
+        from stylelora.llm.config import atomic_json
+        from stylelora.prompts.dictionaries import digest
+        settings = self.rt.product.root/'config.json'
+        # Old product file plus a safety receipt cached before the field was retired.
+        atomic_json(settings, {'revision': 4, 'cost_policy': 'ask', 'wd_enabled': False,
+                               'prompt_auto_complete_default': True,
+                               '_safety_operations': {'old': {
+                                   'digest': digest([{}, '4']),
+                                   'result': {'revision': 4, 'cost_policy': 'ask', 'wd_enabled': False,
+                                              'prompt_auto_complete_default': True, 'version': '4'}}}})
+        value = self.client.get('/api/settings').json()
+        self.assertNotIn('prompt_auto_complete_default', value)
+        self.assertEqual(value['version'], '4')
+        # Replaying the legacy receipt must be filtered too.
+        receipt = self.rt.product.update_safety({}, '4', 'old')
+        self.assertNotIn('prompt_auto_complete_default', receipt)
+        response = self.write('PATCH', '/api/settings', {'nsfw_enabled': False}, 4)
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertFalse(response.json()['auto_complete'])
-        self.assertEqual(response.json()['schema_version'], 5)
-        self.assertTrue(all('auto_complete' in g for g in self.client.get('/api/prompt-groups').json()['items']))
-        self.assertFalse(service(self.rt).store.auto_complete_default())
-        for bad in (0, 1, 'false', None):
-            self.assertEqual(self.write('PATCH', '/api/settings', {'prompt_auto_complete_default': bad}, 1).status_code, 422)
-            self.assertEqual(self.write('PATCH', path, {'auto_complete': bad}, 2).status_code, 422)
-            self.assertEqual(self.write('POST', '/api/prompt-groups', {'name': 'Bad', 'auto_complete': bad}).status_code, 422)
+        self.assertNotIn('prompt_auto_complete_default', response.json())
+        self.assertEqual(response.json()['version'], '5')
+        # The retired field is not written back either.
+        self.assertNotIn('prompt_auto_complete_default',
+                         json.loads(settings.read_text(encoding='utf-8')))
 
     def test_entry_CAS_receipts_readonly_and_persistence(self):
         group = self.create()

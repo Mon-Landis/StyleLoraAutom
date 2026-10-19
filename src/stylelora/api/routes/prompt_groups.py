@@ -230,7 +230,7 @@ async def settings(request: Request):
 @router.patch('/settings')
 async def patch_settings(request: Request):
     rt, value, expected = runtime(request), await request.json(), revision(request)
-    require(isinstance(value, dict) and not set(value)-{'nsfw_enabled', 'nsfw_display_mode', 'image_display', 'prompt_auto_complete_default'})
+    require(isinstance(value, dict) and not set(value)-{'nsfw_enabled', 'nsfw_display_mode', 'image_display'})
     request_key = key(request)
     return result(await rt.product.call(lambda: rt.product.update_safety(value, expected, request_key)))
 

@@ -9,12 +9,13 @@ from uuid import uuid4
 
 from stylelora.prompts.groups import (
     BASE_FIELDS, CONTENT, Entry, Group, GeneratedFields, FieldVersions,
-    PendingField, CompletionState, PreviewRef, validate_entry, decode_group,
+    PendingField, PreviewRef, validate_entry, decode_group,
     migrate_group, migrate_v4, migrate_v3, migrate_v2, content, content_digest,
     render, freeze_groups, legacy_dictionary,
 )
 from stylelora.prompts.group_legacy import (
     legacy_version, merge_legacy_content, legacy_content_issues, adapt_legacy_entry,
+    variant_issues,
 )
 from stylelora.prompts.types import PromptError, plain
 
@@ -37,7 +38,7 @@ class V5Tests(unittest.TestCase):
         self.assertFalse(hasattr(entry, 'expand_nl'))
         self.assertEqual(plain(entry.generated), {'nl': False, 'variants': {}})
         self.assertEqual(plain(entry.edit_versions), {'nl': 0, 'variants': {}})
-        self.assertEqual(entry.completion, CompletionState())
+        self.assertFalse(hasattr(entry, 'completion'))
         group = self.group(entry)
         self.assertEqual((group.schema_version, group.prompt_format, group.normalization_version),
                          (5, 'nai', 'nai-storage-v1'))
@@ -85,7 +86,9 @@ class V5Tests(unittest.TestCase):
                           edit_versions=FieldVersions(4, {'night': 2, 'deleted': 7}),
                           pending={'nl': PendingField('pending', 'fake-task', 1, 4, 'digest')},
                           preview=PreviewRef(str(uuid4()), 'a' * 64, 20, 30))
-        self.assertEqual(decode_group(plain(self.group(updated))).entries[0], updated)
+        # Pending completion locks are retired on decode; everything else round-trips.
+        decoded = decode_group(plain(self.group(updated))).entries[0]
+        self.assertEqual(decoded, replace(updated, pending={}))
         self.assertEqual(content_digest(original), content_digest(updated))
         for values in ({'nl': 'other'}, {'variants': {'night': 'dark'}}, {'disable': True}, {'aspect': 'square'}):
             self.assertNotEqual(content_digest(original), content_digest(replace(original, **values)))
@@ -96,7 +99,7 @@ class V5Tests(unittest.TestCase):
         for values in ({'generated': {'tag': True}}, {'generated': {'nl': 1}},
                        {'edit_versions': {'expand_nl': 1}}, {'edit_versions': {'nl': True}},
                        {'edit_versions': {'nl': -1}}, {'pending': {'tag': {}}},
-                       {'completion': {'missing': ['tag']}}, {'pending': {'nl': {}}}):
+                       {'pending': {'nl': {}}}):
             with self.subTest(values=values), self.assertRaises(PromptError):
                 replace(self.entry(), **values)
 
@@ -139,48 +142,124 @@ class MigrationTests(unittest.TestCase):
                     'kind': 'prompts', 'scope': 'project', 'nsfw': True, 'revision': 7,
                     'auto_complete': False, 'entries': [self.row], '_operations': {'old': {'result': 7}}}
 
-    def test_merge_order_original_whitespace_and_duplicates(self):
-        self.assertEqual(merge_legacy_content(self.row), 'blue_cat, cat\n\n description \n\n description ')
+    def test_nl_only_from_legacy_nl_and_tag_expand_become_variants(self):
+        # tag/expand_nl never merge into nl; they keep their original variant keys.
+        self.assertEqual(merge_legacy_content(self.row), ' description ')
         entry = migrate_v4(self.raw).entries[0]
-        self.assertEqual(entry.nl, 'blue cat, cat\n\n description \n\n description ')
+        self.assertEqual(entry.nl, ' description ')
+        self.assertEqual(dict(entry.variants), {'tag': 'blue cat, cat', 'expand_nl': ' description '})
         self.assertEqual(legacy_content_issues(self.row)[0].code, 'migration:possible_duplicate')
         self.assertEqual(entry.entry_id, self.entry_id)
         self.assertNotIn('tag', plain(entry))
         self.assertNotIn('expand_nl', plain(entry))
 
+    def test_tag_and_expand_nl_nl_all_present(self):
+        # All three legacy fields present: nl keeps only the old nl, others are variants.
+        self.row.update(generated={'tag': True, 'expand_nl': True, 'nl': True},
+                        edit_versions={'tag': 4, 'expand_nl': 2, 'nl': 6})
+        row = self.row | {'expand_nl': ' Window ', 'nl': 'A cat sits.'}
+        issues = []
+        result = adapt_legacy_entry(row, issues=issues)
+        self.assertEqual(result['nl'], 'A cat sits.')
+        self.assertEqual(result['variants'], {'tag': 'blue cat, cat', 'expand_nl': ' Window '})
+        self.assertEqual(result['generated']['nl'], True)
+        self.assertEqual(result['generated']['variants'], {'tag': True, 'expand_nl': True})
+        self.assertEqual(result['edit_versions'], {'nl': 7, 'variants': {}})
+        self.assertFalse(issues)
+
+    def test_only_tag(self):
+        # Only tag present: it fills nl (fallback) but is still kept as a variant.
+        row = {'entry_id': self.entry_id, 'tag': ['blue_cat', 'cat']}
+        issues = []
+        result = adapt_legacy_entry(row, issues=issues)
+        self.assertEqual(result['nl'], 'blue cat, cat')
+        self.assertEqual(result['variants'], {'tag': 'blue cat, cat'})
+        self.assertEqual([i.code for i in issues], ['migration:nl_fallback'])
+        self.assertIn('source=tag', issues[0].message)
+        self.assertEqual(migrate_v4(self.raw | {'entries': [row]}).entries[0].nl, 'blue cat, cat')
+
+    def test_existing_variant_key_conflict_keeps_existing(self):
+        # Variant text goes through normalize_prompt, so underscores become spaces.
+        self.row.update(variants={'tag': 'kept_tag', 'expand_nl': 'kept_expand'})
+        issues = []
+        result = adapt_legacy_entry(self.row, issues=issues)
+        self.assertEqual(result['nl'], ' description ')
+        self.assertEqual(result['variants'], {'tag': 'kept tag', 'expand_nl': 'kept expand'})
+        self.assertEqual([i.code for i in issues],
+                         ['migration:variant_conflict', 'migration:variant_conflict'])
+        self.assertEqual({i.field for i in issues}, {self.entry_id})
+        self.assertEqual(variant_issues(self.row)[0].code, 'migration:variant_conflict')
+        # A conflict is reported but never overwrites the existing value.
+        self.assertEqual(migrate_v4(self.raw).entries[0].variants['tag'], 'kept tag')
+
+    def test_variant_limit_warns_and_keeps_nl(self):
+        self.row.update(tag=['new_tag'], expand_nl='new_expand', nl='A cat sits.',
+                        variants={str(i): 'text' for i in range(63)})
+        issues = []
+        result = adapt_legacy_entry(self.row, issues=issues)
+        self.assertEqual(result['nl'], 'A cat sits.')
+        self.assertEqual(len(result['variants']), 64)
+        self.assertIn('tag', result['variants'])
+        self.assertNotIn('expand_nl', result['variants'])
+        # Exactly at the limit the legacy keys still fit: no drop, no warning.
+        self.row.update(variants={str(i): 'text' for i in range(62)})
+        result = adapt_legacy_entry(self.row, issues=issues)
+        self.assertEqual(len(result['variants']), 64)
+        self.assertIn('expand_nl', result['variants'])
+        self.assertEqual([i.code for i in issues], ['migration:variant_limit'])
+        self.assertIn('limit=64', issues[0].message)
+        self.assertEqual(migrate_v4(self.raw).entries[0].nl, 'A cat sits.')
+
     def test_partial_empty_vectors(self):
-        cases = [({'tag': [], 'expand_nl': ' \n', 'nl': ' n '}, ' n '),
-                 ({'tag': ['z', 'a', 'z'], 'expand_nl': '', 'nl': ''}, 'z, a, z'),
-                 ({'tag': [], 'expand_nl': ' e ', 'nl': ''}, ' e ')]
-        for row, expected in cases:
+        cases = [({'tag': [], 'expand_nl': ' \n', 'nl': ' n '}, ' n ', {}),
+                 ({'tag': ['z', 'a', 'z'], 'expand_nl': '', 'nl': ''}, 'z, a, z', {'tag': 'z, a, z'}),
+                 ({'tag': [], 'expand_nl': ' e ', 'nl': ''}, ' e ', {'expand_nl': ' e '})]
+        for row, expected, variants in cases:
             with self.subTest(row=row):
                 result = adapt_legacy_entry(row | {'entry_id': self.entry_id})
                 self.assertEqual(result['nl'], expected)
+                self.assertEqual(result['variants'], variants)
         with self.assertRaises(PromptError):
             adapt_legacy_entry({'entry_id': self.entry_id, 'tag': [], 'nl': ' '})
+
+    def test_nl_fallback_prefers_expand_nl_and_keeps_source_key_marks(self):
+        # Empty nl, distinct tag/expand_nl, both generated: nl takes expand_nl and
+        # generated.nl follows the source *field*, not its text.
+        row = {'entry_id': self.entry_id, 'tag': ['blue_cat'], 'expand_nl': 'A blue cat.',
+               'nl': '', 'generated': {'tag': True, 'expand_nl': True, 'nl': False}}
+        issues = []
+        result = adapt_legacy_entry(row, issues=issues)
+        self.assertEqual(result['nl'], 'A blue cat.')
+        self.assertEqual(result['variants'], {'tag': 'blue cat', 'expand_nl': 'A blue cat.'})
+        self.assertEqual(result['generated'], {'nl': True, 'variants': {'tag': True, 'expand_nl': True}})
+        self.assertEqual([i.code for i in issues], ['migration:nl_fallback'])
+        self.assertIn('source=expand_nl', issues[0].message)
+        self.assertNotIn('A blue cat.', issues[0].message)
 
     def test_anima_conversion_in_base_and_variants(self):
         self.row.update(tag=['(blue_cat:1.3)'], expand_nl='', nl='@foo_bar',
                         variants={'key_unchanged': '(dark_night:1.3)', 'empty': '', 'space': ' \r\n'})
         entry = migrate_v4(self.raw).entries[0]
-        self.assertEqual(entry.nl, '1.5::blue cat::\n\nartist:foo bar')
-        self.assertEqual(dict(entry.variants), {'key_unchanged': '1.5::dark night::', 'empty': '', 'space': ' \n'})
+        self.assertEqual(entry.nl, 'artist:foo bar')
+        self.assertEqual(dict(entry.variants), {'key_unchanged': '1.5::dark night::', 'empty': '',
+                                                'space': ' \n', 'tag': '1.5::blue cat::'})
 
     def test_generated_contributors_and_versions(self):
-        self.row.update(generated={'tag': True, 'expand_nl': True, 'nl': True, 'variants': {'night': True}},
+        self.row.update(generated={'tag': True, 'expand_nl': True, 'nl': True,
+                                   'variants': {'night': True, 'expand_nl': False}},
                         edit_versions={'tag': 8, 'expand_nl': 3, 'nl': 5, 'variants': {'night': 4, 'deleted': 9}},
                         variants={'night': ''})
         entry = migrate_v4(self.raw).entries[0]
         self.assertTrue(entry.generated.nl)
-        self.assertEqual(dict(entry.generated.variants), {'night': True})
+        # tag/expand_nl generation marks map to the variant they produced; nl from old nl.
+        self.assertEqual(dict(entry.generated.variants),
+                         {'night': True, 'expand_nl': True, 'tag': True})
         self.assertEqual(entry.edit_versions.nl, 9)
         self.assertEqual(dict(entry.edit_versions.variants), {'night': 4, 'deleted': 9})
-        for source in ('tag', 'expand_nl', 'nl'):
-            with self.subTest(source=source):
-                row = self.row | {'generated': self.row['generated'] | {source: False}}
-                self.assertFalse(adapt_legacy_entry(row)['generated']['nl'])
-        self.row.update(tag=[], expand_nl='', generated={'nl': True})
-        self.assertTrue(migrate_v4(self.raw).entries[0].generated.nl)
+        self.row.update(generated={'nl': True})
+        self.assertTrue(adapt_legacy_entry(self.row)['generated']['nl'])
+        self.row.update(generated={'tag': True, 'expand_nl': True, 'nl': False})
+        self.assertFalse(adapt_legacy_entry(self.row)['generated']['nl'])
 
     def test_preserves_group_preview_and_clears_old_locks(self):
         self.row.update(disable=True, aspect='portrait',
@@ -189,13 +268,13 @@ class MigrationTests(unittest.TestCase):
                         completion={'state': 'running', 'missing': ['tag'], 'task_id': 'old'})
         group = migrate_v4(self.raw)
         entry = group.entries[0]
-        self.assertEqual((group.dictionary_id, group.scope, group.nsfw, group.auto_complete, group.revision),
-                         (self.identity, 'project', True, False, 8))
+        self.assertEqual((group.dictionary_id, group.scope, group.nsfw, group.revision),
+                         (self.identity, 'project', True, 8))
         self.assertEqual(plain(group._operations), self.raw['_operations'])
         self.assertEqual(plain(entry.preview), self.row['preview'])
         self.assertEqual((entry.disable, entry.aspect), (True, 'portrait'))
         self.assertEqual(dict(entry.pending), {})
-        self.assertEqual(entry.completion, CompletionState())
+        self.assertFalse(hasattr(entry, 'completion'))
 
     def test_pure_deterministic_and_v5_reread_idempotent(self):
         before = copy.deepcopy(self.raw)
@@ -212,9 +291,12 @@ class MigrationTests(unittest.TestCase):
                    'kind': 'prompts', 'revision': 7, 'entries': [
                        {'tags': ['cat', 'cat'], 'natural_language': ' forest ', 'rating': 'explicit'}]}
             with self.subTest(version=version):
-                result = migrate_group(raw, auto_complete_default=False)
-                self.assertEqual((result.schema_version, result.revision, result.auto_complete, result.nsfw), (5, 8, False, True))
-                self.assertEqual(result.entries[0].nl, 'cat, cat\n\n forest ')
+                result = migrate_group(raw)
+                self.assertEqual((result.schema_version, result.revision, result.nsfw), (5, 8, True))
+                # natural_language is the old nl; tags become the "tag" variant.
+                self.assertEqual(result.entries[0].nl, ' forest ')
+                self.assertEqual(dict(result.entries[0].variants),
+                                 {'tag': 'cat, cat', 'expand_nl': ' forest '})
                 self.assertEqual(result.entries[0].entry_id, migrate_v2(raw).entries[0].entry_id)
                 self.assertEqual(result.entries[0].edit_versions.nl, 1)
                 self.assertFalse(result.entries[0].generated.nl)
@@ -222,13 +304,20 @@ class MigrationTests(unittest.TestCase):
     def test_v3_direct_migration_with_defaults(self):
         raw = self.raw | {'schema_version': 3}
         raw.pop('auto_complete')
-        result = migrate_v3(raw, auto_complete_default=False)
-        self.assertEqual((result.schema_version, result.revision, result.auto_complete), (5, 8, False))
+        result = migrate_v3(raw)
+        self.assertEqual((result.schema_version, result.revision), (5, 8))
         self.assertEqual(result.entries[0].entry_id, self.entry_id)
         self.assertEqual(result.entries[0].edit_versions.nl, 1)
 
-    def test_overlong_merge_reports_identity_length_without_io(self):
+    def test_long_nl_is_not_merged_with_tag_expand(self):
+        # 8000 + 8000 no longer overflows because tag/expand_nl stay out of nl.
         self.row.update(tag=[], expand_nl='a' * 8000, nl='b' * 8000)
+        entry = migrate_v4(self.raw).entries[0]
+        self.assertEqual(entry.nl, 'b' * 8000)
+        self.assertEqual(entry.variants['expand_nl'], 'a' * 8000)
+
+    def test_overlong_nl_reports_identity_length_without_io(self):
+        self.row.update(tag=[], expand_nl='a' * 8000, nl='b' * 16001)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'old.json'
             original = json.dumps(self.raw).encode()
@@ -238,7 +327,7 @@ class MigrationTests(unittest.TestCase):
             issue = caught.exception.issues[0]
             self.assertEqual(issue.field, 'nl')
             self.assertIn(self.entry_id, issue.message)
-            self.assertIn('length=16002', issue.message)
+            self.assertIn('length=16001', issue.message)
             self.assertEqual(path.read_bytes(), original)
             self.assertEqual(list(Path(directory).iterdir()), [path])
 
@@ -257,6 +346,29 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 'import:limit')
         self.assertIn(self.entry_id, caught.exception.issues[0].message)
         self.assertIn('source_length=1000001', caught.exception.issues[0].message)
+
+    def test_old_v5_pending_lock_is_dropped_on_read(self):
+        # The completion service is gone: a persisted pending lock would stick forever.
+        raw = plain(migrate_v4(self.raw))
+        raw['entries'][0]['pending'] = {'nl': {'state': 'pending', 'task_id': 'old-task',
+                                               'attempt': 1, 'edit_version': 0,
+                                               'input_digest': 'd'}}
+        group = decode_group(raw)
+        self.assertEqual(dict(group.entries[0].pending), {})
+
+    def test_retired_fields_are_tolerated_and_dropped(self):
+        # Old v5 data may still carry auto_complete and entry completion state.
+        raw = plain(migrate_v4(self.raw))
+        raw['auto_complete'] = True
+        raw['entries'][0]['completion'] = {'state': 'pending', 'missing': ['nl'], 'task_id': 'old'}
+        group = decode_group(raw)
+        self.assertFalse(hasattr(group, 'auto_complete'))
+        self.assertFalse(hasattr(group.entries[0], 'completion'))
+        self.assertEqual(group.entries[0].nl, ' description ')
+        # A malformed retired blob is still rejected rather than silently accepted.
+        for value in ([], {'state': 'unknown'}, {'missing': ['tag']}):
+            with self.subTest(value=value), self.assertRaises(PromptError):
+                decode_group(raw | {'entries': [raw['entries'][0] | {'completion': value}]})
 
     def test_versions_and_malformed_legacy_rejected(self):
         for version in (None, True, 0, 6, '4'):

@@ -11,7 +11,6 @@ import { useVariantDrafts } from '../src/state/variantDrafts';
 const ref: GroupRef = { scope: 'global', project_token: null, group_id: 'g1' };
 const entry = (over: Partial<Entry> = {}): Entry => ({
   entry_id: 'e1', nl: 'a cat', disable: false, aspect: null, preview: null,
-  completion: { state: 'complete', missing: [], task_id: null, error_code: null },
   variants: {},
   ...over,
 });

@@ -5,7 +5,7 @@
  * 捕获监听器先于冒泡监听器触发）。检测到「离开当前页」且需要守卫（有未保存草稿）时：
  *  1. stopImmediatePropagation：路由器收不到这次 popstate，页面不会卸载；
  *  2. history.pushState(原 state, '', 原 href)：把地址栏恢复到当前页（浏览器此时已经跳到目标条目）；
- *  3. 执行 guard（flush 草稿 + 发布）；
+ *  3. 执行 guard（flush 草稿）；
  *  4. 成功：history.go(-1) 回到目标条目，这次 popstate 放行给路由器，完成原本的导航；
  *     失败：留在本页并调用 onBlocked 通知，草稿保留。
  *
@@ -13,7 +13,7 @@
  *  - 步骤 2 用 pushState，会截断被恢复的前进栈、并多出一条同 URL 的历史记录（仅在被拦截时发生）；
  *  - 依赖「捕获监听器先于路由器监听器」的浏览器行为；若某浏览器顺序相反，页面会先卸载，
  *    此时由 useAutoCompletion 卸载 cleanup 里的 leave 兜底（草稿不会被清除，失败时通知「草稿已保留」）；
- *  - 没有草稿时不拦截，直接放行（离开不再发布任何补齐任务）。
+ *  - 没有草稿时不拦截，直接放行。
  */
 export interface GuardWindow {
   location: { hash: string; href: string };
@@ -25,7 +25,7 @@ export interface GuardWindow {
 export interface HistoryGuardOptions {
   /** 当前是否需要拦截离开（如存在未保存草稿）。 */
   shouldGuard: () => boolean;
-  /** 执行离开前的保存/发布；返回 false（或抛错）表示不能离开。 */
+  /** 执行离开前的草稿保存；返回 false（或抛错）表示不能离开。 */
   guard: () => Promise<boolean>;
   /** 导航被阻止（留在本页）时调用，用于通知。 */
   onBlocked: () => void;
