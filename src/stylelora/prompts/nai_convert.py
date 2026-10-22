@@ -165,10 +165,33 @@ def _sorted(warnings):
 _NUMBER = re.compile(r'[+-]?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)\Z')
 _CANDIDATE = re.compile(r'[^\s\\{}\[\],，|:]+::')
 _CANDIDATE_BODY = re.compile(r'[^\s\\{}\[\],，|:]+')
-_STORAGE_CANDIDATE = re.compile(r'[^\s\\{}\[\],，|:_]+::')
+# `_` is a NAI word separator: before a numeric weight it behaves like
+# whitespace, e.g. `_1.8::x::`, `._3::y::`, `,_1.2::z::`. Keep it out of the
+# body so it is retained as plain text, but allow it as a leading boundary.
+_STORAGE_CANDIDATE = re.compile(r'_*[^\s\\{}\[\],，|:_]+::')
 _STORAGE_BODY = re.compile(r'[^\s\\{}\[\],，|:_]+')
+
+
+def _leading_separator_len(candidate: str) -> int:
+    """Count leading `_` separators, plus a lone `.` glued to them.
+
+    `_1.8::` -> 1, `._1.6::` -> 2, `.__3::` -> 3. A `.` only counts when
+    followed by `_`, so `.5::` stays a plain number.
+    """
+    if not candidate.startswith(('.', '_')):
+        return 0
+    if candidate.startswith('.'):
+        n = 1
+        while n < len(candidate) and candidate[n] == '_':
+            n += 1
+        return n if n > 1 else 0
+    return len(candidate) - len(candidate.lstrip('_'))
+
+
 _BRACKETS = {'{': LexKind.OPEN_UP, '}': LexKind.CLOSE_UP,
              '[': LexKind.OPEN_DOWN, ']': LexKind.CLOSE_DOWN}
+_BRACKET_OPENERS = (LexKind.OPEN_UP, LexKind.OPEN_DOWN)
+_BRACKET_CLOSERS = (LexKind.CLOSE_UP, LexKind.CLOSE_DOWN)
 
 
 def scan_nai(text: str, *, policy: ConversionPolicy, storage: bool = False) -> LexResult:
@@ -189,6 +212,25 @@ def scan_nai(text: str, *, policy: ConversionPolicy, storage: bool = False) -> L
         if pending < end:
             raw = text[pending:end]
             items.append(LexToken(LexKind.TEXT, raw, SourceSpan(pending, end), raw))
+
+    def _storage_opens_numeric(pos):
+        """Storage mode: does a numeric `weight::` block start at ``pos``?
+
+        A leading run of underscores is a word separator (`_1.8::`,
+        `._3::`, `,_1.2::`) and is not part of the number.
+        """
+        c = text[pos]
+        if c in '+-.0123456789' and (pos == 0 or text[pos - 1] not in '+-.0123456789'):
+            return True
+        if text[pos:pos + 3].lower() == 'nan' or text[pos:pos + 8].lower() == 'infinity':
+            return True
+        if c == '_':
+            match = _STORAGE_CANDIDATE.match(text, pos)
+            if match is not None:
+                candidate = match[0][:-2].lstrip('_')
+                return bool(candidate) and (candidate[0] in '+-.0123456789'
+                                            or candidate.lower() in ('nan', 'infinity'))
+        return False
 
     while i < len(text):
         c = text[i]
@@ -215,19 +257,34 @@ def scan_nai(text: str, *, policy: ConversionPolicy, storage: bool = False) -> L
             elif not storage:
                 warnings.append(_warning(WarningCode.W_UNKNOWN_DCOLON, SourceSpan(i, end)))
                 eligible = False
-        elif ((storage and i >= storage_skip and (c in '+-.0123456789' and
-                            (i == 0 or text[i - 1] not in '+-.0123456789')
-                            or text[i:i + 3].lower() == 'nan'
-                            or text[i:i + 8].lower() == 'infinity'))
+        elif ((storage and i >= storage_skip and _storage_opens_numeric(i))
               or (not storage and not active and eligible)) and not c.isspace():
-            match = (_STORAGE_CANDIDATE if storage else _CANDIDATE).match(text, i)
+            pattern = _STORAGE_CANDIDATE if storage else _CANDIDATE
+            match = pattern.match(text, i)
             if storage and match is None:
                 body = _STORAGE_BODY.match(text, i)
                 storage_skip = body.end() if body else i + 1
             candidate = match[0][:-2] if match else ''
-            if candidate and (candidate[0] in '+-.0123456789'
-                              or candidate.lower() in ('nan', 'infinity')):
-                end = match.end()
+            # Leading underscores are separators, not part of the number; keep
+            # them as text before the numeric block. This applies to both the
+            # converter and storage scans: `_1.8::`, `._3::`, `,_1.2::`.
+            lead = _leading_separator_len(candidate) if candidate else 0
+            if lead and candidate[lead:]:
+                flush(i + lead)
+                i += lead
+                pending = i
+                candidate = candidate[lead:]
+            if not storage and '_' in candidate and not _NUMBER.fullmatch(candidate):
+                # `1_2::` is `1` then a new `2::` block, like `1 2::`.
+                head = candidate.split('_', 1)[0]
+                if head and _NUMBER.fullmatch(head):
+                    end = i + len(head)
+                    kind, value = LexKind.TEXT, head
+                else:
+                    eligible = False
+            if kind is None and candidate and (candidate[0] in '+-.0123456789'
+                                               or candidate.lower() in ('nan', 'infinity')):
+                end = i + len(candidate) + 2
                 if len(candidate) <= policy.max_numeric_chars and _NUMBER.fullmatch(candidate):
                     kind, value = LexKind.NUM_OPEN, Decimal(candidate)
                     active, eligible = True, True
@@ -239,7 +296,7 @@ def scan_nai(text: str, *, policy: ConversionPolicy, storage: bool = False) -> L
                     storage_skip = end - 2
                     end = i + 1
                 else:
-                    kind, value = LexKind.INVALID_NUM, match[0]
+                    kind, value = LexKind.INVALID_NUM, text[i:end]
                     code = WarningCode.W_NUMERIC_LIMIT if storage and len(candidate) > policy.max_numeric_chars else WarningCode.W_INVALID_NUMBER
                     warnings.append(_warning(code, SourceSpan(i, end)))
                     eligible = False
@@ -261,6 +318,10 @@ def scan_nai(text: str, *, policy: ConversionPolicy, storage: bool = False) -> L
                 eligible = False
             elif c.isspace():
                 # Whitespace is a word boundary: `s 1.5::x::` starts a numeric block too.
+                eligible = not active
+            elif c == '_' and not storage:
+                # NAI writes spaces as underscores: `_1.8::`, `._3::`, `,_1.2::`
+                # must behave like their space-separated counterparts.
                 eligible = not active
             else:
                 eligible = False
@@ -443,6 +504,20 @@ def _render_storage(text, lexed, tags, weight_for, *, anima=False):
     output, tokens, warnings = [], [], []
     dropped_empty = False
     cursor = 0
+
+    def top_level(start):
+        """True when ``start`` is not inside a bracket or numeric block."""
+        depth = 0
+        for item in lexed.items:
+            if item.span.start >= start:
+                break
+            if item.kind in _BRACKET_OPENERS or item.kind == LexKind.NUM_OPEN:
+                depth += 1
+            elif item.kind in _BRACKET_CLOSERS or item.kind == LexKind.DCOLON:
+                if depth:
+                    depth -= 1
+        return depth == 0
+
     for tag in tags:
         while cursor < len(lexed.items) and lexed.items[cursor].span.end <= tag.span.start:
             item = lexed.items[cursor]
@@ -454,7 +529,12 @@ def _render_storage(text, lexed, tags, weight_for, *, anima=False):
         trailing = value[len(value.rstrip()):]
         body = value.strip()
         if not body:
-            dropped_empty = True
+            if top_level(tag.span.start):
+                # A lone `_` separator outside a block is ordinary text, not
+                # an empty tag: `_1.8::x::` keeps the leading space.
+                output.append(text[tag.span.start:tag.span.end].replace('_', ' '))
+            else:
+                dropped_empty = True
             while cursor < len(lexed.items) and lexed.items[cursor].span.start < tag.span.end:
                 cursor += 1
             continue

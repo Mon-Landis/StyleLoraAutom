@@ -236,7 +236,30 @@ class F28Boundaries(unittest.TestCase):
         self.assertEqual(result.text, 'a|b, \\[x\\], a b, a，b, \\\\')
         self.assertFalse(result.warnings)
 
-    def test_parse_preserves_nonpositive_weight(self):
+    def test_underscore_is_a_numeric_weight_boundary(self):
+        # `_` stands in for spaces in NAI metadata. A converter-path `_` before
+        # a numeric weight must match the space-separated semantics.
+        cases = [
+            ('_1.8::x::', '(x:1.48)'),
+            ('._1.8::x::', '., (x:1.48)'),
+            ('a,_1.2::x::', 'a, (x:1.12)'),
+            ('AABBQAQQA_1.5::nnnn::.', 'AABBQAQQA, (nnnn:1.3), .'),
+            ('1_2::y::', '1, (y:1.6)'),
+            ('_1.8::AAA::._1.6::DDD::._AABBQAQQA_1.5::nnnn::.',
+             '(AAA:1.48), ., (DDD:1.36), . AABBQAQQA, (nnnn:1.3), .'),
+        ]
+        for source, output in cases:
+            with self.subTest(source=source):
+                result = convert_nai_to_anima(source)
+                self.assertEqual(result.text, output)
+                self.assertFalse(result.warnings)
+        # Legal digit-containing words keep their existing behaviour.
+        for source, output in [('year_2025', 'year 2025'), ('no_text', 'no text'),
+                               ('3::3d::', '(3d:2.2)'), ('._3::3d::', '., (3d:2.2)')]:
+            with self.subTest(source=source):
+                self.assertEqual(convert_nai_to_anima(source).text, output)
+
+
         lexed = scan_nai('-1::x::', policy=P)
         parsed = parse_nai(lexed.items, policy=P)
         self.assertEqual(parsed.items, (WeightedTag('x', Decimal(-1), SourceSpan(4, 5)),))

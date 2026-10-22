@@ -34,6 +34,33 @@ class NormalizeTests(TestCase):
                    return_value=replace(valid, text='cat, 1.05::::')):
             self.assert_error('cat')
 
+    def test_underscore_is_a_numeric_weight_boundary(self):
+        # NAI image metadata writes spaces as `_`; a `_` before a numeric
+        # weight must behave like whitespace in both storage and converter paths.
+        user = '_1.8::AAA::._1.6::DDD::._AABBQAQQA_1.5::nnnn::.'
+        spaced = ' 1.8::AAA::. 1.6::DDD::. AABBQAQQA 1.5::nnnn::.'
+        self.assertEqual(normalize_prompt(user, 'nai').text,
+                         normalize_prompt(spaced, 'nai').text)
+        self.assertFalse(normalize_prompt(user, 'nai').warnings)
+        cases = {
+            '_1.8::x::': ' 1.8::x::',
+            '._1.8::x::': '. 1.8::x::',
+            ',_1.2::x::, cat': ', 1.2::x::, cat',
+            '_1.8::AAA::._1.6::DDD::._AABBQAQQA_1.5::nnnn::.':
+                ' 1.8::AAA::. 1.6::DDD::. AABBQAQQA 1.5::nnnn::.',
+            'AABBQAQQA_1.5::nnnn::': 'AABBQAQQA 1.5::nnnn::',
+            'year_2025': 'year 2025',
+            'no_text': 'no text',
+            '3::3d::': '3::3d::',
+            '._3::3d::': '. 3::3d::',
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                result = normalize_prompt(text, 'nai')
+                self.assertEqual(result.text, expected)
+                self.assertFalse(result.warnings)
+                self.assertEqual(normalize_prompt(result.text, 'nai').text, expected)
+
     def test_numeric_looking_body_and_underscore_boundary(self):
         cases = {
             '3::3d::': '3::3d::',
