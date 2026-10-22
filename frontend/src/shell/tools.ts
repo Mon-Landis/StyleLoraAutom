@@ -12,6 +12,7 @@ export const TOOLS_LABEL = '工具箱';
 
 export const TOOLS: ToolDef[] = [
   { id: 'prompt-convert', path: '/tools/prompt-convert', label: '提示词转换', icon: 'tool-convert' },
+  { id: 'nai-metadata', path: '/tools/nai-metadata', label: 'NAI 元数据打印', icon: 'tool-metadata' },
 ];
 
 export function toolFor(pathname: string): ToolDef | undefined {

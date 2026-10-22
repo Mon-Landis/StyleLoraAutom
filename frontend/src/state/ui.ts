@@ -7,10 +7,17 @@ import { persist } from 'zustand/middleware';
  */
 export const UI_STORAGE_KEY = 'stylelora.ui';
 
+export type NaiMetadataDropMode = 'none' | 'head' | 'global';
+
 interface UiStore {
   sidebarCollapsed: boolean;
   setSidebarCollapsed: (v: boolean) => void;
   toggleSidebar: () => void;
+  /** NAI 元数据打印工具的选项，跨会话记住。 */
+  naiMetadataDropMode: NaiMetadataDropMode;
+  naiMetadataToAnima: boolean;
+  setNaiMetadataDropMode: (v: NaiMetadataDropMode) => void;
+  setNaiMetadataToAnima: (v: boolean) => void;
 }
 
 export const useUi = create<UiStore>()(
@@ -19,11 +26,19 @@ export const useUi = create<UiStore>()(
       sidebarCollapsed: false,
       setSidebarCollapsed: (sidebarCollapsed) => set({ sidebarCollapsed }),
       toggleSidebar: () => set({ sidebarCollapsed: !get().sidebarCollapsed }),
+      naiMetadataDropMode: 'head',
+      naiMetadataToAnima: true,
+      setNaiMetadataDropMode: (naiMetadataDropMode) => set({ naiMetadataDropMode }),
+      setNaiMetadataToAnima: (naiMetadataToAnima) => set({ naiMetadataToAnima }),
     }),
     {
       name: UI_STORAGE_KEY,
       version: 1,
-      partialize: (s) => ({ sidebarCollapsed: s.sidebarCollapsed }),
+      partialize: (s) => ({
+        sidebarCollapsed: s.sidebarCollapsed,
+        naiMetadataDropMode: s.naiMetadataDropMode,
+        naiMetadataToAnima: s.naiMetadataToAnima,
+      }),
     },
   ),
 );

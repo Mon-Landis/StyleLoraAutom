@@ -361,8 +361,8 @@ class ApiTests(unittest.TestCase):
         import re
         app = self.client.app
         routes = [(m, re.sub(r'\{[^}]+\}', '{}', r.path)) for r in app.routes if r.path.startswith('/api') for m in r.methods]
-        self.assertEqual(len(routes), 170)  # Includes F31 import preview images.
-        self.assertEqual(len(set(routes)), 170)
+        self.assertEqual(len(routes), 171)  # Includes F31 import preview images and the NAI metadata tool.
+        self.assertEqual(len(set(routes)), 171)
         result = self.post('/api/tagger/models/install', {'manifest_id': 'unknown'})
         self.assertEqual(result.status_code, 501)
         self.assertEqual(result.json()['error']['code'], 'tagger:download_unavailable')

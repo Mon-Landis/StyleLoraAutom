@@ -46,11 +46,11 @@ describe('sidebar collapse linkage', () => {
     expect(screen.getByRole('link', { name: '项目信息' })).toBeTruthy();
   });
 
-  it('persists only the collapsed preference to localStorage', () => {
+  it('persists only the whitelisted UI preferences to localStorage', () => {
     mount();
     fireEvent.click(screen.getByRole('button', { name: '收起侧边栏' }));
     const saved = JSON.parse(localStorage.getItem(UI_STORAGE_KEY)!);
-    expect(saved.state).toEqual({ sidebarCollapsed: true });
+    expect(saved.state).toEqual({ sidebarCollapsed: true, naiMetadataDropMode: 'head', naiMetadataToAnima: true });
     expect(JSON.stringify(saved)).not.toMatch(/token/i);
   });
 });

@@ -9,16 +9,16 @@ export type IconName =
   | 'undo' | 'export' | 'warn' | 'image' | 'prev' | 'next' | 'plus'
   | 'nav-workbench' | 'nav-sources' | 'nav-prompts' | 'settings' | 'project' | 'project-open'
   | 'sidebar-collapse' | 'sidebar-expand' | 'tasks' | 'theme'
-  | 'nav-tools' | 'tool-convert' | 'chevron-down' | 'chevron-right' | 'copy'
-  | 'ai-generated' | 'generating' | 'unsaved';
+  | 'nav-tools' | 'tool-convert' | 'tool-metadata' | 'chevron-down' | 'chevron-right' | 'copy'
+  | 'ai-generated' | 'generating' | 'unsaved' | 'folder' | 'files';
 
 const glyphs: Record<IconName, string> = {
   keep: '✓', reject: '✕', unreviewed: '○', search: '⌕', refresh: '↻', close: '×', play: '▶',
   undo: '↶', export: '⇪', warn: '!', image: '▣', prev: '‹', next: '›', plus: '+',
   'nav-workbench': '▦', 'nav-sources': '☰', 'nav-prompts': '✎', settings: '⚙', project: 'ⓘ', 'project-open': '▤',
   'sidebar-collapse': '«', 'sidebar-expand': '»', tasks: '≣', theme: '◐',
-  'nav-tools': '⚒', 'tool-convert': '⇄', 'chevron-down': '▾', 'chevron-right': '▸', copy: '⧉',
-  'ai-generated': '✦', generating: '⋯', unsaved: '●',
+  'nav-tools': '⚒', 'tool-convert': '⇄', 'tool-metadata': '▤', 'chevron-down': '▾', 'chevron-right': '▸', copy: '⧉',
+  'ai-generated': '✦', generating: '⋯', unsaved: '●', folder: '▢', files: '▤',
 };
 
 export interface SlotSet {

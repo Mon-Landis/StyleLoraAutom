@@ -40,6 +40,20 @@ class ExtractedPrompt:
     issues: tuple[Issue, ...]
 
 
+@dataclass(frozen=True)
+class ExtractedParts:
+    """Positive prompt together with its structured pieces.
+
+    The extraction result is carried unchanged; ``base`` and ``chars`` are the
+    v4 caption components when the winning source is ``Comment.v4_prompt``
+    (``chars`` holds non-blank character captions only) and None/empty
+    otherwise, so fallback sources never fabricate character prompts.
+    """
+    extraction: ExtractedPrompt
+    base: str | None
+    chars: tuple[str, ...]
+
+
 _SIGNATURE = b'\x89PNG\r\n\x1a\n'
 _TEXT = {b'tEXt', b'iTXt', b'zTXt'}
 _PIXEL_CHUNKS = {b'IHDR', b'PLTE', b'IDAT', b'IEND', b'tRNS'}
@@ -191,7 +205,7 @@ def _json(text, ctx):
         return None
 
 
-def _v4(obj):
+def _v4_parts(obj):
     v4 = obj['v4_prompt']
     if not isinstance(v4, dict) or not isinstance(v4.get('caption'), dict):
         raise _Invalid
@@ -200,26 +214,37 @@ def _v4(obj):
     characters = caption.get('char_captions', [])
     if not isinstance(base, str) or not isinstance(characters, list):
         raise _Invalid
-    parts = [base]
+    chars = []
     for character in characters:
         if not isinstance(character, dict) or not isinstance(character.get('char_caption'), str):
             raise _Invalid
         text = character['char_caption']
         if text.strip():
-            parts.append(text)
-    return '\n\n'.join(parts)
+            chars.append(text)
+    return base, tuple(chars)
 
 
-def _positive(objects, texts, ctx):
+def _v4(obj):
+    base, chars = _v4_parts(obj)
+    return '\n\n'.join((base, *chars))
+
+
+def _positive(objects, texts, ctx, parts=None):
     for field in ('v4_prompt', 'prompt'):
         for obj in objects:
             if field not in obj:
                 continue
             try:
-                text = _v4(obj) if field == 'v4_prompt' else obj[field]
+                if field == 'v4_prompt':
+                    base, chars = _v4_parts(obj)
+                    text = '\n\n'.join((base, *chars))
+                else:
+                    base, chars, text = None, (), obj[field]
                 if not isinstance(text, str):
                     raise _Invalid
                 if text.strip():
+                    if parts is not None:
+                        parts.update(base=base, chars=chars)
                     return text, 'Comment.' + field
             except _Invalid:
                 ctx.issue()
@@ -236,7 +261,7 @@ def _positive(objects, texts, ctx):
     return '', None
 
 
-def _stealth(image, ctx):
+def _stealth(image, ctx, parts=None):
     if 'A' not in image.getbands() or image.width * image.height < 152:
         return '', None
     # Transposition gives x-outer/y-inner order without creating an RGBA copy.
@@ -273,8 +298,20 @@ def _stealth(image, ctx):
         comment = _json(obj['Comment'], ctx)
         objects = [comment] if comment is not None else []
     texts = [(key, obj[key]) for key in ('Description', 'parameters') if isinstance(obj.get(key), str)]
-    text, source = _positive(objects, texts, ctx)
+    text, source = _positive(objects, texts, ctx, parts)
     return text, marker.decode('ascii') if source else None
+
+
+def extract_positive_parts(data: bytes, *,
+                           limits: MetadataLimits = MetadataLimits()) -> ExtractedParts:
+    """Extract the positive prompt and its v4 caption components.
+
+    ``extraction`` is exactly what :func:`extract_positive` returns for the same
+    input. ``base``/``chars`` are populated only when the winning source is
+    Comment.v4_prompt; fallback sources yield ``base=None`` and ``chars=()``.
+    """
+    parts = {}
+    return ExtractedParts(_extract(data, limits, parts), parts.get('base'), parts.get('chars', ()))
 
 
 def extract_positive(data: bytes, *, limits: MetadataLimits = MetadataLimits()) -> ExtractedPrompt:
@@ -286,6 +323,10 @@ def extract_positive(data: bytes, *, limits: MetadataLimits = MetadataLimits()) 
     metadata:limit). At most 32 diagnostics are returned. No metadata is logged.
     Limits may be lowered, but cannot exceed the F31 per-image caps.
     """
+    return _extract(data, limits, None)
+
+
+def _extract(data, limits, parts):
     ctx = _Context(limits)
     try:
         texts, pixels = _container(data, ctx)
@@ -301,9 +342,9 @@ def extract_positive(data: bytes, *, limits: MetadataLimits = MetadataLimits()) 
                         obj = _json(text, ctx)
                         if obj is not None:
                             objects.append(obj)
-                text, source = _positive(objects, texts, ctx)
+                text, source = _positive(objects, texts, ctx, parts)
                 if source is None:
-                    text, source = _stealth(image, ctx)
+                    text, source = _stealth(image, ctx, parts)
         return ExtractedPrompt(text, source, tuple(ctx.issues))
     except _Limit:
         ctx.issue('metadata:limit', 'error')

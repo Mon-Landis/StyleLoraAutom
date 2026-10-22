@@ -28,7 +28,8 @@ class ProjectContext:
 class Runtime:
     def __init__(self, product_root, *, authority='127.0.0.1:8000', dev_origin=None,
                  picker=None, backend_factory=None, clock=time.monotonic, catalog=None,
-                 executors=None, snapshots=None, llm=None, secret_store=None):
+                 executors=None, snapshots=None, llm=None, secret_store=None,
+                 image_picker=None):
         self.token, self.secret = secrets.token_urlsafe(32), secrets.token_bytes(32)
         if dev_origin is not None:
             from urllib.parse import urlsplit
@@ -37,6 +38,7 @@ class Runtime:
                 raise Failure(422, 'input:invalid')
         self.instance_id, self.authority = str(uuid4()), authority
         self.dev_origin, self.clock, self.picker = dev_origin, clock, picker
+        self.image_picker = image_picker
         self.backend_factory = backend_factory
         self.catalog, self.executors, self.snapshots, self.llm = catalog, executors or {}, snapshots or {}, llm
         self.job_runners = {}
